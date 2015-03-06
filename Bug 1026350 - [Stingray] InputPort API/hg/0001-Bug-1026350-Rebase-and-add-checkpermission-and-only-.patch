@@ -1,6 +1,9 @@
 # HG changeset patch
 # User James Cheng <jacheng@mozilla.com>
-
+# Date 1425661371 -28800
+#      Sat Mar 07 01:02:51 2015 +0800
+# Node ID ef577d18abe9197e0f1ff6a8ea848b4998e44bd4
+# Parent  7d85ac833cffb46f4b59ebf4f5ba88114b2f5fe6
 [PATCH 1/2] Bug 1026350 - Rebase and add checkpermission and only allow certified app to use inputport API.
 
 ---
@@ -19,7 +22,7 @@
  dom/inputport/FakeInputPortService.h         |  55 +++++++++
  dom/inputport/HDMIInputPort.cpp              |  39 ++++++
  dom/inputport/HDMIInputPort.h                |  33 ++++++
- dom/inputport/InputPort.cpp                  | 118 ++++++++++++++++++
+ dom/inputport/InputPort.cpp                  | 120 +++++++++++++++++++
  dom/inputport/InputPort.h                    |  64 ++++++++++
  dom/inputport/InputPortData.cpp              | 112 ++++++++++++++++++
  dom/inputport/InputPortData.h                |  41 +++++++
@@ -44,7 +47,7 @@
  dom/webidl/moz.build                         |   5 +
  layout/build/nsLayoutModule.cpp              |  16 ++-
  mobile/android/installer/package-manifest.in |   1 +
- 40 files changed, 1570 insertions(+), 1 deletion(-)
+ 40 files changed, 1572 insertions(+), 1 deletion(-)
  create mode 100644 dom/inputport/AVInputPort.cpp
  create mode 100644 dom/inputport/AVInputPort.h
  create mode 100644 dom/inputport/DisplayPortInputPort.cpp
@@ -75,10 +78,9 @@
  create mode 100644 dom/webidl/InputPortManager.webidl
 
 diff --git a/b2g/app/b2g.js b/b2g/app/b2g.js
-index 210f7a3..a907015 100644
 --- a/b2g/app/b2g.js
 +++ b/b2g/app/b2g.js
-@@ -1090,16 +1090,19 @@ pref("dom.mapped_arraybuffer.enabled", true);
+@@ -1090,16 +1090,19 @@ pref("dom.mapped_arraybuffer.enabled", t
  pref("dom.broadcastChannel.enabled", true);
  
  // UDPSocket API
@@ -99,29 +101,27 @@ index 210f7a3..a907015 100644
  pref("dom.mozSettings.SettingsManager.verbose.enabled", false);
  pref("dom.mozSettings.SettingsRequestManager.verbose.enabled", false);
 diff --git a/b2g/installer/package-manifest.in b/b2g/installer/package-manifest.in
-index 89a56ba..29d2c66 100644
 --- a/b2g/installer/package-manifest.in
 +++ b/b2g/installer/package-manifest.in
-@@ -205,16 +205,17 @@
- @BINPATH@/components/dom_cellbroadcast.xpt
- @BINPATH@/components/dom_mobilemessage.xpt
- @BINPATH@/components/dom_storage.xpt
- @BINPATH@/components/dom_stylesheets.xpt
- @BINPATH@/components/dom_telephony.xpt
- @BINPATH@/components/dom_threads.xpt
- @BINPATH@/components/dom_traversal.xpt
- @BINPATH@/components/dom_tv.xpt
-+@BINPATH@/components/dom_inputport.xpt
- @BINPATH@/components/dom_views.xpt
- @BINPATH@/components/dom_voicemail.xpt
+@@ -218,16 +218,17 @@
+ @RESPATH@/components/dom_cellbroadcast.xpt
+ @RESPATH@/components/dom_mobilemessage.xpt
+ @RESPATH@/components/dom_storage.xpt
+ @RESPATH@/components/dom_stylesheets.xpt
+ @RESPATH@/components/dom_telephony.xpt
+ @RESPATH@/components/dom_threads.xpt
+ @RESPATH@/components/dom_traversal.xpt
+ @RESPATH@/components/dom_tv.xpt
++@RESPATH@/components/dom_inputport.xpt
+ @RESPATH@/components/dom_views.xpt
+ @RESPATH@/components/dom_voicemail.xpt
  #ifdef MOZ_WEBSPEECH
- @BINPATH@/components/dom_webspeechrecognition.xpt
+ @RESPATH@/components/dom_webspeechrecognition.xpt
  #endif
- @BINPATH@/components/dom_xbl.xpt
- @BINPATH@/components/dom_xpath.xpt
- @BINPATH@/components/dom_xul.xpt
+ @RESPATH@/components/dom_xbl.xpt
+ @RESPATH@/components/dom_xpath.xpt
+ @RESPATH@/components/dom_xul.xpt
 diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
-index b3982d0..eb57b98 100644
 --- a/browser/installer/package-manifest.in
 +++ b/browser/installer/package-manifest.in
 @@ -227,16 +227,17 @@
@@ -143,10 +143,9 @@ index b3982d0..eb57b98 100644
  @RESPATH@/components/dom_xpath.xpt
  @RESPATH@/components/dom_xul.xpt
 diff --git a/dom/apps/PermissionsTable.jsm b/dom/apps/PermissionsTable.jsm
-index 4d0e58f..dcb57ea 100644
 --- a/dom/apps/PermissionsTable.jsm
 +++ b/dom/apps/PermissionsTable.jsm
-@@ -532,16 +532,22 @@ this.PermissionsTable =  { geolocation: {
+@@ -532,16 +532,22 @@ this.PermissionsTable =  { geolocation: 
                               certified: ALLOW_ACTION
                             },
                             "secureelement-manage": {
@@ -170,7 +169,6 @@ index 4d0e58f..dcb57ea 100644
   * @param string aPermName
   * @param array aAccess
 diff --git a/dom/base/Navigator.cpp b/dom/base/Navigator.cpp
-index ad008d4..154ef1d 100644
 --- a/dom/base/Navigator.cpp
 +++ b/dom/base/Navigator.cpp
 @@ -36,16 +36,17 @@
@@ -191,7 +189,7 @@ index ad008d4..154ef1d 100644
  #include "Connection.h"
  #include "mozilla/dom/Event.h" // for nsIDOMEvent::InternalDOMEvent()
  #include "nsGlobalWindow.h"
-@@ -176,16 +177,17 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(Navigator)
+@@ -176,16 +177,17 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(
    NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mNotification)
    NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mBatteryManager)
    NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPowerManager)
@@ -261,7 +259,6 @@ index ad008d4..154ef1d 100644
      aRv.Throw(NS_ERROR_UNEXPECTED);
      return nullptr;
 diff --git a/dom/base/Navigator.h b/dom/base/Navigator.h
-index 09ba8e9..57ece6d 100644
 --- a/dom/base/Navigator.h
 +++ b/dom/base/Navigator.h
 @@ -92,16 +92,17 @@ class IccManager;
@@ -319,7 +316,6 @@ index 09ba8e9..57ece6d 100644
    nsRefPtr<bluetooth::BluetoothManager> mBluetooth;
  #endif
 diff --git a/dom/base/nsGkAtomList.h b/dom/base/nsGkAtomList.h
-index 651eaca..4ca182e 100644
 --- a/dom/base/nsGkAtomList.h
 +++ b/dom/base/nsGkAtomList.h
 @@ -720,16 +720,17 @@ GK_ATOM(ondeleted, "ondeleted")
@@ -342,7 +338,6 @@ index 651eaca..4ca182e 100644
  GK_ATOM(onDOMCharacterDataModified, "onDOMCharacterDataModified")
 diff --git a/dom/inputport/AVInputPort.cpp b/dom/inputport/AVInputPort.cpp
 new file mode 100644
-index 0000000..25ce82c
 --- /dev/null
 +++ b/dom/inputport/AVInputPort.cpp
 @@ -0,0 +1,38 @@
@@ -386,7 +381,6 @@ index 0000000..25ce82c
 +} //namespace mozilla
 diff --git a/dom/inputport/AVInputPort.h b/dom/inputport/AVInputPort.h
 new file mode 100644
-index 0000000..ba046e1
 --- /dev/null
 +++ b/dom/inputport/AVInputPort.h
 @@ -0,0 +1,33 @@
@@ -425,7 +419,6 @@ index 0000000..ba046e1
 +#endif // mozilla_dom_AVInputPort_h
 diff --git a/dom/inputport/DisplayPortInputPort.cpp b/dom/inputport/DisplayPortInputPort.cpp
 new file mode 100644
-index 0000000..fde5196
 --- /dev/null
 +++ b/dom/inputport/DisplayPortInputPort.cpp
 @@ -0,0 +1,38 @@
@@ -469,7 +462,6 @@ index 0000000..fde5196
 +} //namespace mozilla
 diff --git a/dom/inputport/DisplayPortInputPort.h b/dom/inputport/DisplayPortInputPort.h
 new file mode 100644
-index 0000000..828d264
 --- /dev/null
 +++ b/dom/inputport/DisplayPortInputPort.h
 @@ -0,0 +1,33 @@
@@ -508,7 +500,6 @@ index 0000000..828d264
 +#endif // mozilla_dom_DisplayPortInputPort_h
 diff --git a/dom/inputport/FakeInputPortService.cpp b/dom/inputport/FakeInputPortService.cpp
 new file mode 100644
-index 0000000..f2b8969
 --- /dev/null
 +++ b/dom/inputport/FakeInputPortService.cpp
 @@ -0,0 +1,171 @@
@@ -685,7 +676,6 @@ index 0000000..f2b8969
 +} // namespace mozilla
 diff --git a/dom/inputport/FakeInputPortService.h b/dom/inputport/FakeInputPortService.h
 new file mode 100644
-index 0000000..d99099e
 --- /dev/null
 +++ b/dom/inputport/FakeInputPortService.h
 @@ -0,0 +1,55 @@
@@ -746,7 +736,6 @@ index 0000000..d99099e
 +#endif // mozilla_dom_FakeInputPortService_h
 diff --git a/dom/inputport/HDMIInputPort.cpp b/dom/inputport/HDMIInputPort.cpp
 new file mode 100644
-index 0000000..8e7f353
 --- /dev/null
 +++ b/dom/inputport/HDMIInputPort.cpp
 @@ -0,0 +1,39 @@
@@ -791,7 +780,6 @@ index 0000000..8e7f353
 +} //namespace mozilla
 diff --git a/dom/inputport/HDMIInputPort.h b/dom/inputport/HDMIInputPort.h
 new file mode 100644
-index 0000000..acc70e6
 --- /dev/null
 +++ b/dom/inputport/HDMIInputPort.h
 @@ -0,0 +1,33 @@
@@ -830,10 +818,9 @@ index 0000000..acc70e6
 +#endif // mozilla_dom_HDMIInputPort_h
 diff --git a/dom/inputport/InputPort.cpp b/dom/inputport/InputPort.cpp
 new file mode 100644
-index 0000000..ce4a0ff
 --- /dev/null
 +++ b/dom/inputport/InputPort.cpp
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,120 @@
 +/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 +/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -890,6 +877,8 @@ index 0000000..ce4a0ff
 +  mInputPortListener = static_cast<InputPortListener*>(aListener);
 +  mInputPortListener->RegisterInputPort(this);
 +
++  mStream = DOMMediaStream::CreateSourceStream(GetOwner());
++
 +  return true;
 +}
 +
@@ -938,7 +927,7 @@ index 0000000..ce4a0ff
 +}
 +
 +already_AddRefed<DOMMediaStream>
-+InputPort::GetStream() const
++InputPort::Stream() const
 +{
 +  nsRefPtr<DOMMediaStream> stream = mStream;
 +  return stream.forget();
@@ -954,7 +943,6 @@ index 0000000..ce4a0ff
 +} // namespace mozilla
 diff --git a/dom/inputport/InputPort.h b/dom/inputport/InputPort.h
 new file mode 100644
-index 0000000..b17fa19
 --- /dev/null
 +++ b/dom/inputport/InputPort.h
 @@ -0,0 +1,64 @@
@@ -994,9 +982,9 @@ index 0000000..b17fa19
 +  // WebIDL (public APIs)
 +  void GetId(nsAString& aId) const;
 +
-+  virtual InputPortType Type() const;
++  InputPortType Type() const;
 +
-+  already_AddRefed<DOMMediaStream> GetStream() const;
++  already_AddRefed<DOMMediaStream> Stream() const;
 +
 +  bool Connected() const;
 +
@@ -1024,7 +1012,6 @@ index 0000000..b17fa19
 +#endif // mozilla_dom_InputPort_h
 diff --git a/dom/inputport/InputPortData.cpp b/dom/inputport/InputPortData.cpp
 new file mode 100644
-index 0000000..b7296f5
 --- /dev/null
 +++ b/dom/inputport/InputPortData.cpp
 @@ -0,0 +1,112 @@
@@ -1142,7 +1129,6 @@ index 0000000..b7296f5
 +} // namespace mozilla
 diff --git a/dom/inputport/InputPortData.h b/dom/inputport/InputPortData.h
 new file mode 100644
-index 0000000..651ed0f
 --- /dev/null
 +++ b/dom/inputport/InputPortData.h
 @@ -0,0 +1,41 @@
@@ -1189,7 +1175,6 @@ index 0000000..651ed0f
 +#endif // mozilla_dom_InputPortData_h
 diff --git a/dom/inputport/InputPortListeners.cpp b/dom/inputport/InputPortListeners.cpp
 new file mode 100644
-index 0000000..d6ad904
 --- /dev/null
 +++ b/dom/inputport/InputPortListeners.cpp
 @@ -0,0 +1,50 @@
@@ -1245,7 +1230,6 @@ index 0000000..d6ad904
 +} // namespace mozilla
 diff --git a/dom/inputport/InputPortListeners.h b/dom/inputport/InputPortListeners.h
 new file mode 100644
-index 0000000..c7e4168
 --- /dev/null
 +++ b/dom/inputport/InputPortListeners.h
 @@ -0,0 +1,39 @@
@@ -1290,7 +1274,6 @@ index 0000000..c7e4168
 +#endif // mozilla_dom_InputPortListeners_h
 diff --git a/dom/inputport/InputPortManager.cpp b/dom/inputport/InputPortManager.cpp
 new file mode 100644
-index 0000000..7394c3e
 --- /dev/null
 +++ b/dom/inputport/InputPortManager.cpp
 @@ -0,0 +1,134 @@
@@ -1430,7 +1413,6 @@ index 0000000..7394c3e
 +} // namespace mozilla
 diff --git a/dom/inputport/InputPortManager.h b/dom/inputport/InputPortManager.h
 new file mode 100644
-index 0000000..4e00f9c
 --- /dev/null
 +++ b/dom/inputport/InputPortManager.h
 @@ -0,0 +1,60 @@
@@ -1496,7 +1478,6 @@ index 0000000..4e00f9c
 +#endif // mozilla_dom_InputPortManager_h__
 diff --git a/dom/inputport/InputPortServiceCallbacks.cpp b/dom/inputport/InputPortServiceCallbacks.cpp
 new file mode 100644
-index 0000000..8a8fbd7
 --- /dev/null
 +++ b/dom/inputport/InputPortServiceCallbacks.cpp
 @@ -0,0 +1,109 @@
@@ -1611,7 +1592,6 @@ index 0000000..8a8fbd7
 +} // namespace mozilla
 diff --git a/dom/inputport/InputPortServiceCallbacks.h b/dom/inputport/InputPortServiceCallbacks.h
 new file mode 100644
-index 0000000..da54047
 --- /dev/null
 +++ b/dom/inputport/InputPortServiceCallbacks.h
 @@ -0,0 +1,36 @@
@@ -1653,7 +1633,6 @@ index 0000000..da54047
 +#endif // mozilla_dom_InputPortServiceCallbacks_h
 diff --git a/dom/inputport/InputPortServiceFactory.cpp b/dom/inputport/InputPortServiceFactory.cpp
 new file mode 100644
-index 0000000..4fd071a
 --- /dev/null
 +++ b/dom/inputport/InputPortServiceFactory.cpp
 @@ -0,0 +1,46 @@
@@ -1705,7 +1684,6 @@ index 0000000..4fd071a
 +} // namespace mozilla
 diff --git a/dom/inputport/InputPortServiceFactory.h b/dom/inputport/InputPortServiceFactory.h
 new file mode 100644
-index 0000000..6c32756
 --- /dev/null
 +++ b/dom/inputport/InputPortServiceFactory.h
 @@ -0,0 +1,30 @@
@@ -1741,7 +1719,6 @@ index 0000000..6c32756
 +#endif // mozilla_dom_InputPortServiceFactory_h
 diff --git a/dom/inputport/InputPortServiceRunnables.h b/dom/inputport/InputPortServiceRunnables.h
 new file mode 100644
-index 0000000..fc0b380
 --- /dev/null
 +++ b/dom/inputport/InputPortServiceRunnables.h
 @@ -0,0 +1,56 @@
@@ -1803,7 +1780,6 @@ index 0000000..fc0b380
 +#endif // mozilla_dom_InputPortServiceRunnables_h
 diff --git a/dom/inputport/moz.build b/dom/inputport/moz.build
 new file mode 100644
-index 0000000..9718a0c
 --- /dev/null
 +++ b/dom/inputport/moz.build
 @@ -0,0 +1,47 @@
@@ -1856,7 +1832,6 @@ index 0000000..9718a0c
 +FAIL_ON_WARNINGS = True
 diff --git a/dom/inputport/nsIInputPortService.idl b/dom/inputport/nsIInputPortService.idl
 new file mode 100644
-index 0000000..b6064f0
 --- /dev/null
 +++ b/dom/inputport/nsIInputPortService.idl
 @@ -0,0 +1,75 @@
@@ -1936,7 +1911,6 @@ index 0000000..b6064f0
 +  void getInputPorts(in nsIInputPortServiceCallback callback);
 +};
 diff --git a/dom/moz.build b/dom/moz.build
-index 06aa5ec..2883aeb 100644
 --- a/dom/moz.build
 +++ b/dom/moz.build
 @@ -59,16 +59,17 @@ DIRS += [
@@ -1959,7 +1933,6 @@ index 06aa5ec..2883aeb 100644
      'notification',
 diff --git a/dom/webidl/AVInputPort.webidl b/dom/webidl/AVInputPort.webidl
 new file mode 100644
-index 0000000..5cc1e84
 --- /dev/null
 +++ b/dom/webidl/AVInputPort.webidl
 @@ -0,0 +1,8 @@
@@ -1973,7 +1946,6 @@ index 0000000..5cc1e84
 + };
 diff --git a/dom/webidl/DisplayPortInputPort.webidl b/dom/webidl/DisplayPortInputPort.webidl
 new file mode 100644
-index 0000000..6a4abf6
 --- /dev/null
 +++ b/dom/webidl/DisplayPortInputPort.webidl
 @@ -0,0 +1,8 @@
@@ -1987,7 +1959,6 @@ index 0000000..6a4abf6
 + };
 diff --git a/dom/webidl/HDMIInputPort.webidl b/dom/webidl/HDMIInputPort.webidl
 new file mode 100644
-index 0000000..6b214ed
 --- /dev/null
 +++ b/dom/webidl/HDMIInputPort.webidl
 @@ -0,0 +1,8 @@
@@ -2001,7 +1972,6 @@ index 0000000..6b214ed
 + };
 diff --git a/dom/webidl/InputPort.webidl b/dom/webidl/InputPort.webidl
 new file mode 100644
-index 0000000..098f35f
 --- /dev/null
 +++ b/dom/webidl/InputPort.webidl
 @@ -0,0 +1,17 @@
@@ -2017,14 +1987,13 @@ index 0000000..098f35f
 +interface InputPort : EventTarget {
 +  readonly attribute DOMString id;
 +  readonly attribute InputPortType type;
-+  readonly attribute MediaStream? stream;
++  readonly attribute MediaStream stream;
 +  readonly attribute boolean connected;
 +  attribute EventHandler onconnect;
 +  attribute EventHandler ondisconnect;
 +};
 diff --git a/dom/webidl/InputPortManager.webidl b/dom/webidl/InputPortManager.webidl
 new file mode 100644
-index 0000000..e7b7d32
 --- /dev/null
 +++ b/dom/webidl/InputPortManager.webidl
 @@ -0,0 +1,11 @@
@@ -2040,7 +2009,6 @@ index 0000000..e7b7d32
 +   Promise<sequence<InputPort>> getInputPorts();
 + };
 diff --git a/dom/webidl/Navigator.webidl b/dom/webidl/Navigator.webidl
-index e78a9a4..cbb3de8 100644
 --- a/dom/webidl/Navigator.webidl
 +++ b/dom/webidl/Navigator.webidl
 @@ -407,16 +407,21 @@ partial interface Navigator {
@@ -2066,7 +2034,6 @@ index e78a9a4..cbb3de8 100644
  };
  #endif
 diff --git a/dom/webidl/moz.build b/dom/webidl/moz.build
-index 265e00b..1515478 100644
 --- a/dom/webidl/moz.build
 +++ b/dom/webidl/moz.build
 @@ -42,16 +42,17 @@ WEBIDL_FILES = [
@@ -2143,7 +2110,6 @@ index 265e00b..1515478 100644
      'KeyboardEvent.webidl',
      'KeyEvent.webidl',
 diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
-index eb8f8d6..ad36af0 100644
 --- a/layout/build/nsLayoutModule.cpp
 +++ b/layout/build/nsLayoutModule.cpp
 @@ -235,16 +235,21 @@ static void Shutdown();
@@ -2168,7 +2134,7 @@ index eb8f8d6..ad36af0 100644
  #include "GMPService.h"
  
  #include "mozilla/dom/presentation/PresentationDeviceManager.h"
-@@ -380,17 +385,19 @@ NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(nsIVoicemailService,
+@@ -380,17 +385,19 @@ NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR
  #endif
  NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(FakeTVService,
                                           TVServiceFactory::CreateFakeTVService)
@@ -2189,7 +2155,7 @@ index eb8f8d6..ad36af0 100644
  
  // static
  nsresult
-@@ -822,16 +829,19 @@ NS_DEFINE_NAMED_CID(NS_SYNTHVOICEREGISTRY_CID);
+@@ -822,16 +829,19 @@ NS_DEFINE_NAMED_CID(NS_SYNTHVOICEREGISTR
  #ifdef ACCESSIBILITY
  NS_DEFINE_NAMED_CID(NS_ACCESSIBILITY_SERVICE_CID);
  #endif
@@ -2209,7 +2175,7 @@ index eb8f8d6..ad36af0 100644
  
  static nsresult
  CreateWindowCommandTableConstructor(nsISupports *aOuter,
-@@ -1121,16 +1131,18 @@ static const mozilla::Module::CIDEntry kLayoutCIDs[] = {
+@@ -1121,16 +1131,18 @@ static const mozilla::Module::CIDEntry k
    { &kNS_VOICEMAIL_SERVICE_CID, false, nullptr, nsIVoicemailServiceConstructor },
  #endif
    { &kFAKE_TV_SERVICE_CID, false, nullptr, FakeTVServiceConstructor },
@@ -2228,7 +2194,7 @@ index eb8f8d6..ad36af0 100644
    { "@mozilla.org/layout/xul-boxobject;1", &kNS_BOXOBJECT_CID },
  #ifdef MOZ_XUL
    { "@mozilla.org/layout/xul-boxobject-listbox;1", &kNS_LISTBOXOBJECT_CID },
-@@ -1287,16 +1299,18 @@ static const mozilla::Module::ContractIDEntry kLayoutContracts[] = {
+@@ -1287,16 +1299,18 @@ static const mozilla::Module::ContractID
    { TV_PROGRAM_DATA_CONTRACTID, &kTV_PROGRAM_DATA_CID },
    { "@mozilla.org/gecko-media-plugin-service;1",  &kGECKO_MEDIA_PLUGIN_SERVICE_CID },
  #ifndef DISABLE_MOZ_RIL_GEOLOC
@@ -2248,7 +2214,6 @@ index eb8f8d6..ad36af0 100644
    { "content-policy", NS_NODATAPROTOCOLCONTENTPOLICY_CONTRACTID, NS_NODATAPROTOCOLCONTENTPOLICY_CONTRACTID },
    { "content-policy", "CSPService", CSPSERVICE_CONTRACTID },
 diff --git a/mobile/android/installer/package-manifest.in b/mobile/android/installer/package-manifest.in
-index a87e52c..8438688 100644
 --- a/mobile/android/installer/package-manifest.in
 +++ b/mobile/android/installer/package-manifest.in
 @@ -161,16 +161,17 @@
@@ -2269,4 +2234,3 @@ index a87e52c..8438688 100644
  @BINPATH@/components/dom_xpath.xpt
  @BINPATH@/components/dom_xul.xpt
  #ifdef MOZ_GAMEPAD
-
