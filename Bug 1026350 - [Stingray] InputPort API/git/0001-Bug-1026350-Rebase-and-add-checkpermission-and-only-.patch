@@ -1,4 +1,4 @@
-From 024b52b2d5ee9b421ff7eed9055576222842df85 Mon Sep 17 00:00:00 2001
+From 9545e4504e14992d52fa4c313a84e8ff71b7209b Mon Sep 17 00:00:00 2001
 From: James Cheng <jacheng@mozilla.com>
 Date: Fri, 13 Feb 2015 14:51:16 +0800
 Subject: [PATCH 1/2] Bug 1026350 - Rebase and add checkpermission and only
@@ -20,7 +20,7 @@ Subject: [PATCH 1/2] Bug 1026350 - Rebase and add checkpermission and only
  dom/inputport/FakeInputPortService.h         |  55 +++++++++
  dom/inputport/HDMIInputPort.cpp              |  39 ++++++
  dom/inputport/HDMIInputPort.h                |  33 ++++++
- dom/inputport/InputPort.cpp                  | 118 ++++++++++++++++++
+ dom/inputport/InputPort.cpp                  | 120 +++++++++++++++++++
  dom/inputport/InputPort.h                    |  64 ++++++++++
  dom/inputport/InputPortData.cpp              | 112 ++++++++++++++++++
  dom/inputport/InputPortData.h                |  41 +++++++
@@ -45,7 +45,7 @@ Subject: [PATCH 1/2] Bug 1026350 - Rebase and add checkpermission and only
  dom/webidl/moz.build                         |   5 +
  layout/build/nsLayoutModule.cpp              |  16 ++-
  mobile/android/installer/package-manifest.in |   1 +
- 40 files changed, 1570 insertions(+), 1 deletion(-)
+ 40 files changed, 1572 insertions(+), 1 deletion(-)
  create mode 100644 dom/inputport/AVInputPort.cpp
  create mode 100644 dom/inputport/AVInputPort.h
  create mode 100644 dom/inputport/DisplayPortInputPort.cpp
@@ -831,10 +831,10 @@ index 0000000..acc70e6
 +#endif // mozilla_dom_HDMIInputPort_h
 diff --git a/dom/inputport/InputPort.cpp b/dom/inputport/InputPort.cpp
 new file mode 100644
-index 0000000..ce4a0ff
+index 0000000..834d59d
 --- /dev/null
 +++ b/dom/inputport/InputPort.cpp
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,120 @@
 +/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 +/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -891,6 +891,8 @@ index 0000000..ce4a0ff
 +  mInputPortListener = static_cast<InputPortListener*>(aListener);
 +  mInputPortListener->RegisterInputPort(this);
 +
++  mStream = DOMMediaStream::CreateSourceStream(GetOwner());
++
 +  return true;
 +}
 +
@@ -939,7 +941,7 @@ index 0000000..ce4a0ff
 +}
 +
 +already_AddRefed<DOMMediaStream>
-+InputPort::GetStream() const
++InputPort::Stream() const
 +{
 +  nsRefPtr<DOMMediaStream> stream = mStream;
 +  return stream.forget();
@@ -955,7 +957,7 @@ index 0000000..ce4a0ff
 +} // namespace mozilla
 diff --git a/dom/inputport/InputPort.h b/dom/inputport/InputPort.h
 new file mode 100644
-index 0000000..b17fa19
+index 0000000..e0acd7b
 --- /dev/null
 +++ b/dom/inputport/InputPort.h
 @@ -0,0 +1,64 @@
@@ -995,9 +997,9 @@ index 0000000..b17fa19
 +  // WebIDL (public APIs)
 +  void GetId(nsAString& aId) const;
 +
-+  virtual InputPortType Type() const;
++  InputPortType Type() const;
 +
-+  already_AddRefed<DOMMediaStream> GetStream() const;
++  already_AddRefed<DOMMediaStream> Stream() const;
 +
 +  bool Connected() const;
 +
@@ -2002,7 +2004,7 @@ index 0000000..6b214ed
 + };
 diff --git a/dom/webidl/InputPort.webidl b/dom/webidl/InputPort.webidl
 new file mode 100644
-index 0000000..098f35f
+index 0000000..978586b
 --- /dev/null
 +++ b/dom/webidl/InputPort.webidl
 @@ -0,0 +1,17 @@
@@ -2018,7 +2020,7 @@ index 0000000..098f35f
 +interface InputPort : EventTarget {
 +  readonly attribute DOMString id;
 +  readonly attribute InputPortType type;
-+  readonly attribute MediaStream? stream;
++  readonly attribute MediaStream stream;
 +  readonly attribute boolean connected;
 +  attribute EventHandler onconnect;
 +  attribute EventHandler ondisconnect;

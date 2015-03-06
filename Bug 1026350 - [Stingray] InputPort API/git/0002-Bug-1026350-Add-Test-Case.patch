@@ -1,16 +1,18 @@
-From 0b9987a926ffe24cd24a78301f6390ec67026afa Mon Sep 17 00:00:00 2001
+From 21d1054c80b982cbe1c77a2aced8b4885d5374be Mon Sep 17 00:00:00 2001
 From: James Cheng <jacheng@mozilla.com>
 Date: Thu, 5 Mar 2015 13:45:13 +0800
 Subject: [PATCH 2/2] Bug 1026350 - Add Test Case
 
 ---
  dom/inputport/moz.build                            |  6 +-
- dom/inputport/test/mochitest/mochitest.ini         |  3 +
- .../mochitest/test_inputport_get_inputports.html   | 64 ++++++++++++++++++++++
- dom/inputport/test/xpcshell/test_inputport_data.js | 61 +++++++++++++++++++++
+ dom/inputport/test/mochitest/mochitest.ini         |  4 ++
+ .../mochitest/test_inputport_connection_event.html | 72 ++++++++++++++++++++++
+ .../mochitest/test_inputport_get_inputports.html   | 64 +++++++++++++++++++
+ dom/inputport/test/xpcshell/test_inputport_data.js | 61 ++++++++++++++++++
  dom/inputport/test/xpcshell/xpcshell.ini           |  5 ++
- 5 files changed, 138 insertions(+), 1 deletion(-)
+ 6 files changed, 211 insertions(+), 1 deletion(-)
  create mode 100644 dom/inputport/test/mochitest/mochitest.ini
+ create mode 100644 dom/inputport/test/mochitest/test_inputport_connection_event.html
  create mode 100644 dom/inputport/test/mochitest/test_inputport_get_inputports.html
  create mode 100644 dom/inputport/test/xpcshell/test_inputport_data.js
  create mode 100644 dom/inputport/test/xpcshell/xpcshell.ini
@@ -41,17 +43,96 @@ index 9718a0c..7358349 100644
 \ No newline at end of file
 diff --git a/dom/inputport/test/mochitest/mochitest.ini b/dom/inputport/test/mochitest/mochitest.ini
 new file mode 100644
-index 0000000..6e624ed
+index 0000000..2bba048
 --- /dev/null
 +++ b/dom/inputport/test/mochitest/mochitest.ini
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,4 @@
 +[DEFAULT]
 +
 +[test_inputport_get_inputports.html]
++[test_inputport_connection_event.html]
 \ No newline at end of file
+diff --git a/dom/inputport/test/mochitest/test_inputport_connection_event.html b/dom/inputport/test/mochitest/test_inputport_connection_event.html
+new file mode 100644
+index 0000000..24d2ca7
+--- /dev/null
++++ b/dom/inputport/test/mochitest/test_inputport_connection_event.html
+@@ -0,0 +1,72 @@
++<!DOCTYPE HTML>
++<html>
++<!--
++https://bugzilla.mozilla.org/show_bug.cgi?id=1026350
++-->
++<head>
++<meta charset="utf-8">
++<title>Test Inputport Connection Event</title>
++<link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
++  <script type="application/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
++</head>
++<body>
++<a target="_blank" href="https://bugzilla.mozilla.org/show_bug.cgi?id=1026350">Test Inputport Connection Event
++</a>
++<script type="application/javascript;version=1.8">
++
++'use strict';
++
++SimpleTest.waitForExplicitFinish();
++
++function testInputportConnectionEvent() {
++  return new Promise(function(resolve, reject) {
++    var inputPortMgr = navigator.inputPortManager;
++    inputPortMgr.getInputPorts().then(
++      function(aPorts) {
++        ok(aPorts.length > 0, "Got at least 1 inputport.");
++          var port0 = aPorts[0];
++          var port0_isConnected = port0.connected;
++          port0.onconnect = function(aEvent) {
++            var port = aEvent.target;
++            is(port.id, port0.id, "The inputport ID should be the same");
++            ok(port.connected, "The connected value matches the connect evnet purpose");
++            is(port.connected, !port0_isConnected, "The connected value should change");
++            resolve();
++          }
++          port0.ondisconnect = function (aEvent) {
++            var port = aEvent.target;
++            is(port.id, port0.id, "The inputport ID should be the same");
++            ok(!port.connected, "The connected value matches the disconnect evnet purpose");
++            is(port.connected, !port0_isConnected, "The connected value should change");
++            resolve();
++          }
++      },
++      function(aError) {
++        ok(false, "Fail to get input ports: " + aError);
++        resolve();
++      }
++    );
++  });
++}
++
++function runTest() {
++  ok(navigator.inputPortManager, 'should have navigator.inputPortManager');
++
++  testInputportConnectionEvent()
++  .then(function() {
++    info('test finished');
++    SimpleTest.finish();
++  });
++}
++
++SpecialPowers.pushPrefEnv({"set": [["dom.inputport.enabled", true],
++                                    //to ignore app scope check.
++                                   ["dom.ignore_webidl_scope_checks", true]]}, function() {
++  SpecialPowers.pushPermissions(
++    [{'type': 'inputport', 'allow': true, 'context': document}], runTest);
++});
++
++ </script>
++ </pre>
++ </body>
++ </html>
 diff --git a/dom/inputport/test/mochitest/test_inputport_get_inputports.html b/dom/inputport/test/mochitest/test_inputport_get_inputports.html
 new file mode 100644
-index 0000000..fd7a095
+index 0000000..d8855ad
 --- /dev/null
 +++ b/dom/inputport/test/mochitest/test_inputport_get_inputports.html
 @@ -0,0 +1,64 @@
@@ -86,7 +167,7 @@ index 0000000..fd7a095
 +          ok('id' in port, "Inputport " + i + " should have an ID.");
 +          ok('type' in port, "Inputport " + i + " should have a type.");
 +          ok('connected' in port, "Inputport " + i + " should have a connected property.");
-+          ok(!port.stream, "Inputport " + i + " should have no stream by default.");
++          ok(port.stream, "Inputport " + i + " should have non null stream.");
 +          resolve();
 +        }
 +      },
