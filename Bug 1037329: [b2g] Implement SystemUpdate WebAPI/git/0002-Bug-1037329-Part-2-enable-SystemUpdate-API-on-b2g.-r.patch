@@ -1,0 +1,331 @@
+From 92fbcc4758660123fa927c2b50c866098667106c Mon Sep 17 00:00:00 2001
+From: James Cheng <jacheng@mozilla.com>
+Date: Thu, 5 Mar 2015 16:48:01 +0800
+Subject: [PATCH 2/2] Bug 1037329 - Part 2, enable SystemUpdate API on b2g.
+ r=fabrice.
+
+---
+ b2g/app/b2g.js                        |   6 ++
+ b2g/chrome/content/shell.js           |   1 +
+ b2g/components/B2GComponents.manifest |   1 +
+ b2g/components/UpdatePrompt.js        | 101 +++++++++++++++++++++++++++++++++-
+ b2g/installer/package-manifest.in     |   3 +
+ 5 files changed, 111 insertions(+), 1 deletion(-)
+
+diff --git a/b2g/app/b2g.js b/b2g/app/b2g.js
+index 210f7a3..9575407 100644
+--- a/b2g/app/b2g.js
++++ b/b2g/app/b2g.js
+@@ -1084,16 +1084,22 @@ pref("services.mobileid.server.uri", "https://msisdn.services.mozilla.com");
+ // Enable mapped array buffer.
+ #ifndef XP_WIN
+ pref("dom.mapped_arraybuffer.enabled", true);
+ #endif
+ 
+ // BroadcastChannel API
+ pref("dom.broadcastChannel.enabled", true);
+ 
++// SystemUpdate API
++pref("dom.system-update.enabled", true);
++#ifdef MOZ_UPDATER
++pref("dom.system-update.active", "@mozilla.org/updates/update-prompt;1");
++#endif
++
+ // UDPSocket API
+ pref("dom.udpsocket.enabled", true);
+ 
+ // Enable TV Manager API
+ pref("dom.tv.enabled", true);
+ 
+ pref("dom.mozSettings.SettingsDB.debug.enabled", true);
+ pref("dom.mozSettings.SettingsManager.debug.enabled", true);
+diff --git a/b2g/chrome/content/shell.js b/b2g/chrome/content/shell.js
+index b16d062..8f66116 100644
+--- a/b2g/chrome/content/shell.js
++++ b/b2g/chrome/content/shell.js
+@@ -11,16 +11,17 @@ Cu.import('resource://gre/modules/ActivitiesService.jsm');
+ Cu.import('resource://gre/modules/NotificationDB.jsm');
+ Cu.import('resource://gre/modules/Payment.jsm');
+ Cu.import("resource://gre/modules/AppsUtils.jsm");
+ Cu.import('resource://gre/modules/UserAgentOverrides.jsm');
+ Cu.import('resource://gre/modules/Keyboard.jsm');
+ Cu.import('resource://gre/modules/ErrorPage.jsm');
+ Cu.import('resource://gre/modules/AlertsHelper.jsm');
+ Cu.import('resource://gre/modules/RequestSyncService.jsm');
++Cu.import('resource://gre/modules/SystemUpdateService.jsm');
+ #ifdef MOZ_WIDGET_GONK
+ Cu.import('resource://gre/modules/NetworkStatsService.jsm');
+ Cu.import('resource://gre/modules/ResourceStatsService.jsm');
+ #endif
+ 
+ // Identity
+ Cu.import('resource://gre/modules/SignInToWebsite.jsm');
+ SignInToWebsiteController.init();
+diff --git a/b2g/components/B2GComponents.manifest b/b2g/components/B2GComponents.manifest
+index 18a747d..45935f2 100644
+--- a/b2g/components/B2GComponents.manifest
++++ b/b2g/components/B2GComponents.manifest
+@@ -8,16 +8,17 @@ contract @mozilla.org/system-alerts-service;1 {fe33c107-82a4-41d6-8c64-5353267e0
+ # ContentPermissionPrompt.js
+ component {8c719f03-afe0-4aac-91ff-6c215895d467} ContentPermissionPrompt.js
+ contract @mozilla.org/content-permission/prompt;1 {8c719f03-afe0-4aac-91ff-6c215895d467}
+ 
+ #ifdef MOZ_UPDATER
+ # UpdatePrompt.js
+ component {88b3eb21-d072-4e3b-886d-f89d8c49fe59} UpdatePrompt.js
+ contract @mozilla.org/updates/update-prompt;1 {88b3eb21-d072-4e3b-886d-f89d8c49fe59}
++category system-update-provider MozillaProvider @mozilla.org/updates/update-prompt;1,{88b3eb21-d072-4e3b-886d-f89d8c49fe59}
+ #endif
+ 
+ # DirectoryProvider.js
+ component {9181eb7c-6f87-11e1-90b1-4f59d80dd2e5} DirectoryProvider.js
+ contract @mozilla.org/b2g/directory-provider;1 {9181eb7c-6f87-11e1-90b1-4f59d80dd2e5}
+ category xpcom-directory-providers b2g-directory-provider @mozilla.org/b2g/directory-provider;1
+ 
+ # ActivitiesGlue.js
+diff --git a/b2g/components/UpdatePrompt.js b/b2g/components/UpdatePrompt.js
+index fee312f..5c11f67 100644
+--- a/b2g/components/UpdatePrompt.js
++++ b/b2g/components/UpdatePrompt.js
+@@ -124,23 +124,74 @@ function UpdatePrompt() {
+ }
+ 
+ UpdatePrompt.prototype = {
+   classID: Components.ID("{88b3eb21-d072-4e3b-886d-f89d8c49fe59}"),
+   QueryInterface: XPCOMUtils.generateQI([Ci.nsIUpdatePrompt,
+                                          Ci.nsIUpdateCheckListener,
+                                          Ci.nsIRequestObserver,
+                                          Ci.nsIProgressEventSink,
+-                                         Ci.nsIObserver]),
++                                         Ci.nsIObserver,
++                                         Ci.nsISystemUpdateProvider]),
+   _xpcom_factory: XPCOMUtils.generateSingletonFactory(UpdatePrompt),
+ 
+   _update: null,
+   _applyPromptTimer: null,
+   _waitingForIdle: false,
+   _updateCheckListner: null,
++  _updateListener: null,
++  _availableParameters: {
++    "deviceinfo.last_updated": null,
++    "gecko.updateStatus": null,
++    "app.update.channel": null,
++    "app.update.interval": null,
++    "app.update.url": null,
++  },
++
++  // nsISystemUpdateProvider
++  checkForUpdate: function() {
++    this.forceUpdateCheck();
++  },
++  startDownload: function() {
++    this.downloadUpdate(this._update);
++  },
++  stopDownload: function() {
++    this.handleDownloadCancel();
++  },
++  applyUpdate: function() {
++    this.handleApplyPromptResult({result: "restart"});
++  },
++  setParameter: function(name, value) {
++    if (!this._availableParameters.hasOwnProperty(name)) {
++      return false;
++    }
++
++    this._availableParameters[name] = value;
++
++    switch (name) {
++      case "app.update.channel":
++      case "app.update.url":
++        Services.prefs.setCharPref(name, value);
++        break;
++      case "app.update.interval":
++        Services.prefs.setIntPref(name, parseInt(value, 10));
++        break;
++    }
++
++    return true;
++  },
++  getParameter: function(name) {
++    return this._availableParameters[name];
++  },
++  setListener: function(listener) {
++    this._updateListener = listener;
++  },
++  unsetListener: function(listener) {
++    this._updateListener = null;
++  },
+ 
+   get applyPromptTimeout() {
+     return Services.prefs.getIntPref(PREF_APPLY_PROMPT_TIMEOUT);
+   },
+ 
+   get applyIdleTimeout() {
+     return Services.prefs.getIntPref(PREF_APPLY_IDLE_TIMEOUT);
+   },
+@@ -152,24 +203,55 @@ UpdatePrompt.prototype = {
+   // nsIUpdatePrompt
+ 
+   // FIXME/bug 737601: we should have users opt-in to downloading
+   // updates when on a billed pipe.  Initially, opt-in for 3g, but
+   // that doesn't cover all cases.
+   checkForUpdates: function UP_checkForUpdates() { },
+ 
+   showUpdateAvailable: function UP_showUpdateAvailable(aUpdate) {
++    if (this._updateListener) {
++      //XXX need the list of required package information with Gaia dev
++      let packageInfo = {};
++      packageInfo.version = aUpdate.displayVersion;
++      packageInfo.description = aUpdate.statusText;
++      packageInfo.buildDate = aUpdate.buildID;
++
++      let patch = aUpdate.selectedPatch;
++      if (!patch && aUpdate.patchCount > 0) {
++        // For now we just check the first patch to get size information if a
++        // patch hasn't been selected yet.
++        patch = aUpdate.getPatchAt(0);
++      }
++
++      if (patch) {
++        packageInfo.size = patch.size;
++        packageInfo.type = patch.type;
++      } else {
++        log("Warning: no patches available in update");
++      }
++
++      this._updateListener.onUpdateAvailable(packageInfo.type,
++                                             packageInfo.version,
++                                             packageInfo.description,
++                                             packageInfo.buildDate,
++                                             packageInfo.size);
++    }
++
+     if (!this.sendUpdateEvent("update-available", aUpdate)) {
+ 
+       log("Unable to prompt for available update, forcing download");
+       this.downloadUpdate(aUpdate);
+     }
+   },
+ 
+   showUpdateDownloaded: function UP_showUpdateDownloaded(aUpdate, aBackground) {
++    if (this._updateListener) {
++      this._updateListener.onUpdateReady();
++    }
+     // The update has been downloaded and staged. We send the update-downloaded
+     // event right away. After the user has been idle for a while, we send the
+     // update-prompt-restart event, increasing the chances that we can apply the
+     // update quietly without user intervention.
+     this.sendUpdateEvent("update-downloaded", aUpdate);
+ 
+     if (Services.idle.idleTime >= this.applyIdleTimeout) {
+       this.showApplyPrompt(aUpdate);
+@@ -183,22 +265,28 @@ UpdatePrompt.prototype = {
+ 
+     this._update = aUpdate;
+     this.waitForIdle();
+   },
+ 
+   showUpdateError: function UP_showUpdateError(aUpdate) {
+     log("Update error, state: " + aUpdate.state + ", errorCode: " +
+         aUpdate.errorCode);
++    if (this._updateListener) {
++      this._updateListener.onError("update-error: " + aUpdate.errorCode + " " + aUpdate.statusText);
++    }
++
+     this.sendUpdateEvent("update-error", aUpdate);
+     this.setUpdateStatus(aUpdate.statusText);
+   },
+ 
+   showUpdateHistory: function UP_showUpdateHistory(aParent) { },
+   showUpdateInstalled: function UP_showUpdateInstalled() {
++    this.setParameter("deviceinfo.last_updated", Date.now());
++
+     if (useSettings()) {
+       let lock = Services.settings.createLock();
+       lock.set("deviceinfo.last_updated", Date.now(), null, null);
+     }
+   },
+ 
+   // Custom functions
+ 
+@@ -208,25 +296,32 @@ UpdatePrompt.prototype = {
+     }
+ 
+     this._waitingForIdle = true;
+     Services.idle.addIdleObserver(this, this.applyIdleTimeout / 1000);
+     Services.obs.addObserver(this, "quit-application", false);
+   },
+ 
+   setUpdateStatus: function UP_setUpdateStatus(aStatus) {
++     this.setParameter("gecko.updateStatus", aStatus);
++
+      if (useSettings()) {
+        log("Setting gecko.updateStatus: " + aStatus);
+ 
+        let lock = Services.settings.createLock();
+        lock.set("gecko.updateStatus", aStatus, null);
+      }
+   },
+ 
+   showApplyPrompt: function UP_showApplyPrompt(aUpdate) {
++    // notify update package is ready to apply
++    if (this._updateListener) {
++      this._updateListener.onUpdateReady();
++    }
++
+     if (!this.sendUpdateEvent("update-prompt-apply", aUpdate)) {
+       log("Unable to prompt, forcing restart");
+       this.restartProcess();
+       return;
+     }
+ 
+ #ifdef MOZ_B2G_RIL
+     let window = Services.wm.getMostRecentWindow("navigator:browser");
+@@ -576,16 +671,20 @@ UpdatePrompt.prototype = {
+       paused: paused
+     });
+   },
+ 
+   // nsIProgressEventSink
+ 
+   onProgress: function UP_onProgress(aRequest, aContext, aProgress,
+                                      aProgressMax) {
++    if (this._updateListener) {
++      this._updateListener.onProgress(aProgress, aProgressMax);
++    }
++
+     if (aProgress == aProgressMax) {
+       // The update.mar validation done by onStopRequest may take
+       // a while before the onStopRequest callback is made, so stop
+       // the timer now.
+       this.stopWatchdogTimer();
+     } else {
+       this.touchWatchdogTimer();
+     }
+diff --git a/b2g/installer/package-manifest.in b/b2g/installer/package-manifest.in
+index 89a56ba..13ed10c 100644
+--- a/b2g/installer/package-manifest.in
++++ b/b2g/installer/package-manifest.in
+@@ -640,16 +640,19 @@
+ ; InputMethod API
+ @BINPATH@/components/MozKeyboard.js
+ @BINPATH@/components/InputMethod.manifest
+ 
+ @BINPATH@/components/EngineeringMode.manifest
+ @BINPATH@/components/EngineeringModeAPI.js
+ @BINPATH@/components/EngineeringModeService.js
+ 
++@BINPATH@/components/SystemUpdate.manifest
++@BINPATH@/components/SystemUpdateManager.js
++
+ #ifdef MOZ_DEBUG
+ @BINPATH@/components/TestInterfaceJS.js
+ @BINPATH@/components/TestInterfaceJS.manifest
+ #endif
+ 
+ ; Modules
+ @BINPATH@/modules/*
+ 
+-- 
+1.9.1
+

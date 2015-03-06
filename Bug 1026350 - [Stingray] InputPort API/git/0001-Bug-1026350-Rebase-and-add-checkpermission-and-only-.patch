@@ -1,0 +1,2275 @@
+From 024b52b2d5ee9b421ff7eed9055576222842df85 Mon Sep 17 00:00:00 2001
+From: James Cheng <jacheng@mozilla.com>
+Date: Fri, 13 Feb 2015 14:51:16 +0800
+Subject: [PATCH 1/2] Bug 1026350 - Rebase and add checkpermission and only
+ allow certified app to use inputport API.
+
+---
+ b2g/app/b2g.js                               |   3 +
+ b2g/installer/package-manifest.in            |   1 +
+ browser/installer/package-manifest.in        |   1 +
+ dom/apps/PermissionsTable.jsm                |   6 +
+ dom/base/Navigator.cpp                       |  19 +++
+ dom/base/Navigator.h                         |   3 +
+ dom/base/nsGkAtomList.h                      |   1 +
+ dom/inputport/AVInputPort.cpp                |  38 ++++++
+ dom/inputport/AVInputPort.h                  |  33 ++++++
+ dom/inputport/DisplayPortInputPort.cpp       |  38 ++++++
+ dom/inputport/DisplayPortInputPort.h         |  33 ++++++
+ dom/inputport/FakeInputPortService.cpp       | 171 +++++++++++++++++++++++++++
+ dom/inputport/FakeInputPortService.h         |  55 +++++++++
+ dom/inputport/HDMIInputPort.cpp              |  39 ++++++
+ dom/inputport/HDMIInputPort.h                |  33 ++++++
+ dom/inputport/InputPort.cpp                  | 118 ++++++++++++++++++
+ dom/inputport/InputPort.h                    |  64 ++++++++++
+ dom/inputport/InputPortData.cpp              | 112 ++++++++++++++++++
+ dom/inputport/InputPortData.h                |  41 +++++++
+ dom/inputport/InputPortListeners.cpp         |  50 ++++++++
+ dom/inputport/InputPortListeners.h           |  39 ++++++
+ dom/inputport/InputPortManager.cpp           | 134 +++++++++++++++++++++
+ dom/inputport/InputPortManager.h             |  60 ++++++++++
+ dom/inputport/InputPortServiceCallbacks.cpp  | 109 +++++++++++++++++
+ dom/inputport/InputPortServiceCallbacks.h    |  36 ++++++
+ dom/inputport/InputPortServiceFactory.cpp    |  46 +++++++
+ dom/inputport/InputPortServiceFactory.h      |  30 +++++
+ dom/inputport/InputPortServiceRunnables.h    |  56 +++++++++
+ dom/inputport/moz.build                      |  47 ++++++++
+ dom/inputport/nsIInputPortService.idl        |  75 ++++++++++++
+ dom/moz.build                                |   1 +
+ dom/webidl/AVInputPort.webidl                |   8 ++
+ dom/webidl/DisplayPortInputPort.webidl       |   8 ++
+ dom/webidl/HDMIInputPort.webidl              |   8 ++
+ dom/webidl/InputPort.webidl                  |  17 +++
+ dom/webidl/InputPortManager.webidl           |  11 ++
+ dom/webidl/Navigator.webidl                  |   5 +
+ dom/webidl/moz.build                         |   5 +
+ layout/build/nsLayoutModule.cpp              |  16 ++-
+ mobile/android/installer/package-manifest.in |   1 +
+ 40 files changed, 1570 insertions(+), 1 deletion(-)
+ create mode 100644 dom/inputport/AVInputPort.cpp
+ create mode 100644 dom/inputport/AVInputPort.h
+ create mode 100644 dom/inputport/DisplayPortInputPort.cpp
+ create mode 100644 dom/inputport/DisplayPortInputPort.h
+ create mode 100644 dom/inputport/FakeInputPortService.cpp
+ create mode 100644 dom/inputport/FakeInputPortService.h
+ create mode 100644 dom/inputport/HDMIInputPort.cpp
+ create mode 100644 dom/inputport/HDMIInputPort.h
+ create mode 100644 dom/inputport/InputPort.cpp
+ create mode 100644 dom/inputport/InputPort.h
+ create mode 100644 dom/inputport/InputPortData.cpp
+ create mode 100644 dom/inputport/InputPortData.h
+ create mode 100644 dom/inputport/InputPortListeners.cpp
+ create mode 100644 dom/inputport/InputPortListeners.h
+ create mode 100644 dom/inputport/InputPortManager.cpp
+ create mode 100644 dom/inputport/InputPortManager.h
+ create mode 100644 dom/inputport/InputPortServiceCallbacks.cpp
+ create mode 100644 dom/inputport/InputPortServiceCallbacks.h
+ create mode 100644 dom/inputport/InputPortServiceFactory.cpp
+ create mode 100644 dom/inputport/InputPortServiceFactory.h
+ create mode 100644 dom/inputport/InputPortServiceRunnables.h
+ create mode 100644 dom/inputport/moz.build
+ create mode 100644 dom/inputport/nsIInputPortService.idl
+ create mode 100644 dom/webidl/AVInputPort.webidl
+ create mode 100644 dom/webidl/DisplayPortInputPort.webidl
+ create mode 100644 dom/webidl/HDMIInputPort.webidl
+ create mode 100644 dom/webidl/InputPort.webidl
+ create mode 100644 dom/webidl/InputPortManager.webidl
+
+diff --git a/b2g/app/b2g.js b/b2g/app/b2g.js
+index 210f7a3..a907015 100644
+--- a/b2g/app/b2g.js
++++ b/b2g/app/b2g.js
+@@ -1090,16 +1090,19 @@ pref("dom.mapped_arraybuffer.enabled", true);
+ pref("dom.broadcastChannel.enabled", true);
+ 
+ // UDPSocket API
+ pref("dom.udpsocket.enabled", true);
+ 
+ // Enable TV Manager API
+ pref("dom.tv.enabled", true);
+ 
++// Enable Inputport Manager API
++pref("dom.inputport.enabled", true);
++
+ pref("dom.mozSettings.SettingsDB.debug.enabled", true);
+ pref("dom.mozSettings.SettingsManager.debug.enabled", true);
+ pref("dom.mozSettings.SettingsRequestManager.debug.enabled", true);
+ pref("dom.mozSettings.SettingsService.debug.enabled", true);
+ 
+ pref("dom.mozSettings.SettingsDB.verbose.enabled", false);
+ pref("dom.mozSettings.SettingsManager.verbose.enabled", false);
+ pref("dom.mozSettings.SettingsRequestManager.verbose.enabled", false);
+diff --git a/b2g/installer/package-manifest.in b/b2g/installer/package-manifest.in
+index 89a56ba..29d2c66 100644
+--- a/b2g/installer/package-manifest.in
++++ b/b2g/installer/package-manifest.in
+@@ -205,16 +205,17 @@
+ @BINPATH@/components/dom_cellbroadcast.xpt
+ @BINPATH@/components/dom_mobilemessage.xpt
+ @BINPATH@/components/dom_storage.xpt
+ @BINPATH@/components/dom_stylesheets.xpt
+ @BINPATH@/components/dom_telephony.xpt
+ @BINPATH@/components/dom_threads.xpt
+ @BINPATH@/components/dom_traversal.xpt
+ @BINPATH@/components/dom_tv.xpt
++@BINPATH@/components/dom_inputport.xpt
+ @BINPATH@/components/dom_views.xpt
+ @BINPATH@/components/dom_voicemail.xpt
+ #ifdef MOZ_WEBSPEECH
+ @BINPATH@/components/dom_webspeechrecognition.xpt
+ #endif
+ @BINPATH@/components/dom_xbl.xpt
+ @BINPATH@/components/dom_xpath.xpt
+ @BINPATH@/components/dom_xul.xpt
+diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
+index b3982d0..eb57b98 100644
+--- a/browser/installer/package-manifest.in
++++ b/browser/installer/package-manifest.in
+@@ -227,16 +227,17 @@
+ @RESPATH@/components/dom_sidebar.xpt
+ @RESPATH@/components/dom_cellbroadcast.xpt
+ @RESPATH@/components/dom_mobilemessage.xpt
+ @RESPATH@/components/dom_storage.xpt
+ @RESPATH@/components/dom_stylesheets.xpt
+ @RESPATH@/components/dom_telephony.xpt
+ @RESPATH@/components/dom_traversal.xpt
+ @RESPATH@/components/dom_tv.xpt
++@RESPATH@/components/dom_inputport.xpt
+ @RESPATH@/components/dom_voicemail.xpt
+ #ifdef MOZ_WEBSPEECH
+ @RESPATH@/components/dom_webspeechrecognition.xpt
+ #endif
+ @RESPATH@/components/dom_workers.xpt
+ @RESPATH@/components/dom_xbl.xpt
+ @RESPATH@/components/dom_xpath.xpt
+ @RESPATH@/components/dom_xul.xpt
+diff --git a/dom/apps/PermissionsTable.jsm b/dom/apps/PermissionsTable.jsm
+index 4d0e58f..dcb57ea 100644
+--- a/dom/apps/PermissionsTable.jsm
++++ b/dom/apps/PermissionsTable.jsm
+@@ -532,16 +532,22 @@ this.PermissionsTable =  { geolocation: {
+                              certified: ALLOW_ACTION
+                            },
+                            "secureelement-manage": {
+                              app: DENY_ACTION,
+                              trusted: DENY_ACTION,
+                              privileged: DENY_ACTION,
+                              certified: ALLOW_ACTION
+                            }
++                           "inputport": {
++                             app: DENY_ACTION,
++                             trusted: DENY_ACTION,
++                             privileged: ALLOW_ACTION,
++                             certified: ALLOW_ACTION
++                           },
+                          };
+ 
+ /**
+  * Append access modes to the permission name as suffixes.
+  *   e.g. permission name 'contacts' with ['read', 'write'] =
+  *   ['contacts-read', contacts-write']
+  * @param string aPermName
+  * @param array aAccess
+diff --git a/dom/base/Navigator.cpp b/dom/base/Navigator.cpp
+index ad008d4..154ef1d 100644
+--- a/dom/base/Navigator.cpp
++++ b/dom/base/Navigator.cpp
+@@ -36,16 +36,17 @@
+ #include "mozilla/dom/WakeLock.h"
+ #include "mozilla/dom/power/PowerManagerService.h"
+ #include "mozilla/dom/CellBroadcast.h"
+ #include "mozilla/dom/MobileMessageManager.h"
+ #include "mozilla/dom/ServiceWorkerContainer.h"
+ #include "mozilla/dom/Telephony.h"
+ #include "mozilla/dom/Voicemail.h"
+ #include "mozilla/dom/TVManager.h"
++#include "mozilla/dom/InputPortManager.h"
+ #include "mozilla/dom/VRDevice.h"
+ #include "mozilla/Hal.h"
+ #include "nsISiteSpecificUserAgent.h"
+ #include "mozilla/ClearOnShutdown.h"
+ #include "mozilla/StaticPtr.h"
+ #include "Connection.h"
+ #include "mozilla/dom/Event.h" // for nsIDOMEvent::InternalDOMEvent()
+ #include "nsGlobalWindow.h"
+@@ -176,16 +177,17 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(Navigator)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mNotification)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mBatteryManager)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPowerManager)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCellBroadcast)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mMobileMessageManager)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTelephony)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mVoicemail)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTVManager)
++  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInputPortManager)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConnection)
+ #ifdef MOZ_B2G_RIL
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mMobileConnections)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mIccManager)
+ #endif
+ #ifdef MOZ_B2G_BT
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mBluetooth)
+ #endif
+@@ -263,16 +265,20 @@ Navigator::Invalidate()
+     mVoicemail->Shutdown();
+     mVoicemail = nullptr;
+   }
+ 
+   if (mTVManager) {
+     mTVManager = nullptr;
+   }
+ 
++  if (mInputPortManager) {
++    mInputPortManager = nullptr;
++  }
++
+   if (mConnection) {
+     mConnection->Shutdown();
+     mConnection = nullptr;
+   }
+ 
+ #ifdef MOZ_B2G_RIL
+   if (mMobileConnections) {
+     mMobileConnections = nullptr;
+@@ -1616,16 +1622,29 @@ Navigator::GetTv()
+       return nullptr;
+     }
+     mTVManager = TVManager::Create(mWindow);
+   }
+ 
+   return mTVManager;
+ }
+ 
++InputPortManager*
++Navigator::GetInputPortManager()
++{
++  if (!mInputPortManager) {
++    if (!mWindow) {
++      return nullptr;
++    }
++    mInputPortManager = InputPortManager::Create(mWindow);
++  }
++
++  return mInputPortManager;
++}
++
+ #ifdef MOZ_B2G
+ already_AddRefed<Promise>
+ Navigator::GetMobileIdAssertion(const MobileIdOptions& aOptions,
+                                 ErrorResult& aRv)
+ {
+   if (!mWindow || !mWindow->GetDocShell()) {
+     aRv.Throw(NS_ERROR_UNEXPECTED);
+     return nullptr;
+diff --git a/dom/base/Navigator.h b/dom/base/Navigator.h
+index 09ba8e9..57ece6d 100644
+--- a/dom/base/Navigator.h
++++ b/dom/base/Navigator.h
+@@ -92,16 +92,17 @@ class IccManager;
+ class MobileConnectionArray;
+ #endif
+ 
+ class PowerManager;
+ class CellBroadcast;
+ class Telephony;
+ class Voicemail;
+ class TVManager;
++class InputPortManager;
+ 
+ namespace time {
+ class TimeManager;
+ } // namespace time
+ 
+ namespace system {
+ #ifdef MOZ_AUDIO_CHANNEL_MANAGER
+ class AudioChannelManager;
+@@ -223,16 +224,17 @@ public:
+                          nsTArray<nsRefPtr<nsDOMDeviceStorage> >& aStores,
+                          ErrorResult& aRv);
+   DesktopNotificationCenter* GetMozNotification(ErrorResult& aRv);
+   CellBroadcast* GetMozCellBroadcast(ErrorResult& aRv);
+   MobileMessageManager* GetMozMobileMessage();
+   Telephony* GetMozTelephony(ErrorResult& aRv);
+   Voicemail* GetMozVoicemail(ErrorResult& aRv);
+   TVManager* GetTv();
++  InputPortManager* GetInputPortManager();
+   network::Connection* GetConnection(ErrorResult& aRv);
+   nsDOMCameraManager* GetMozCameras(ErrorResult& aRv);
+   MediaDevices* GetMediaDevices(ErrorResult& aRv);
+   void MozSetMessageHandler(const nsAString& aType,
+                             systemMessageCallback* aCallback,
+                             ErrorResult& aRv);
+   bool MozHasPendingMessage(const nsAString& aType, ErrorResult& aRv);
+   void MozSetMessageHandlerPromise(Promise& aPromise, ErrorResult& aRv);
+@@ -352,16 +354,17 @@ private:
+   nsRefPtr<FMRadio> mFMRadio;
+ #endif
+   nsRefPtr<PowerManager> mPowerManager;
+   nsRefPtr<CellBroadcast> mCellBroadcast;
+   nsRefPtr<MobileMessageManager> mMobileMessageManager;
+   nsRefPtr<Telephony> mTelephony;
+   nsRefPtr<Voicemail> mVoicemail;
+   nsRefPtr<TVManager> mTVManager;
++  nsRefPtr<InputPortManager> mInputPortManager;
+   nsRefPtr<network::Connection> mConnection;
+ #ifdef MOZ_B2G_RIL
+   nsRefPtr<MobileConnectionArray> mMobileConnections;
+   nsRefPtr<IccManager> mIccManager;
+ #endif
+ #ifdef MOZ_B2G_BT
+   nsRefPtr<bluetooth::BluetoothManager> mBluetooth;
+ #endif
+diff --git a/dom/base/nsGkAtomList.h b/dom/base/nsGkAtomList.h
+index 651eaca..4ca182e 100644
+--- a/dom/base/nsGkAtomList.h
++++ b/dom/base/nsGkAtomList.h
+@@ -720,16 +720,17 @@ GK_ATOM(ondeleted, "ondeleted")
+ GK_ATOM(ondeliverysuccess, "ondeliverysuccess")
+ GK_ATOM(ondeliveryerror, "ondeliveryerror")
+ GK_ATOM(ondevicefound, "ondevicefound")
+ GK_ATOM(ondevicepaired, "ondevicepaired")
+ GK_ATOM(ondeviceunpaired, "ondeviceunpaired")
+ GK_ATOM(ondialing, "ondialing")
+ GK_ATOM(ondisabled, "ondisabled")
+ GK_ATOM(ondischargingtimechange, "ondischargingtimechange")
++GK_ATOM(ondisconnect, "ondisconnect")
+ GK_ATOM(ondisconnected, "ondisconnected")
+ GK_ATOM(ondisconnecting, "ondisconnecting")
+ GK_ATOM(ondiscoverystatechanged, "ondiscoverystatechanged")
+ GK_ATOM(ondisplaypasskeyreq, "ondisplaypasskeyreq")
+ GK_ATOM(ondownloading, "ondownloading")
+ GK_ATOM(onDOMActivate, "onDOMActivate")
+ GK_ATOM(onDOMAttrModified, "onDOMAttrModified")
+ GK_ATOM(onDOMCharacterDataModified, "onDOMCharacterDataModified")
+diff --git a/dom/inputport/AVInputPort.cpp b/dom/inputport/AVInputPort.cpp
+new file mode 100644
+index 0000000..25ce82c
+--- /dev/null
++++ b/dom/inputport/AVInputPort.cpp
+@@ -0,0 +1,38 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim:set ts=2 sw=2 et tw=78: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/dom/AVInputPort.h"
++#include "mozilla/dom/AVInputPortBinding.h"
++
++namespace mozilla {
++namespace dom {
++
++AVInputPort::AVInputPort(nsPIDOMWindow* aWindow)
++  : InputPort(aWindow)
++{
++}
++
++AVInputPort::~AVInputPort()
++{
++}
++
++/* static */ already_AddRefed<AVInputPort>
++AVInputPort::Create(nsPIDOMWindow* aWindow,
++                    nsIInputPortListener* aListener,
++                    nsIInputPortData* aData)
++{
++  nsRefPtr<AVInputPort> inputport = new AVInputPort(aWindow);
++  return (inputport->Init(aData, aListener)) ? inputport.forget() : nullptr;
++}
++
++JSObject*
++AVInputPort::WrapObject(JSContext* aCx)
++{
++  return AVInputPortBinding::Wrap(aCx, this);
++}
++
++} // namespace dom
++} //namespace mozilla
+diff --git a/dom/inputport/AVInputPort.h b/dom/inputport/AVInputPort.h
+new file mode 100644
+index 0000000..ba046e1
+--- /dev/null
++++ b/dom/inputport/AVInputPort.h
+@@ -0,0 +1,33 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim:set ts=2 sw=2 et tw=78: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_AVInputPort_h
++#define mozilla_dom_AVInputPort_h
++
++#include "mozilla/dom/InputPort.h"
++
++namespace mozilla {
++namespace dom {
++
++class AVInputPort : public InputPort
++{
++public:
++  static already_AddRefed<AVInputPort> Create(nsPIDOMWindow* aWindow,
++                                              nsIInputPortListener* aListener,
++                                              nsIInputPortData* aData);
++
++  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
++
++private:
++  explicit AVInputPort(nsPIDOMWindow* aWindow);
++
++  ~AVInputPort();
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_AVInputPort_h
+diff --git a/dom/inputport/DisplayPortInputPort.cpp b/dom/inputport/DisplayPortInputPort.cpp
+new file mode 100644
+index 0000000..fde5196
+--- /dev/null
++++ b/dom/inputport/DisplayPortInputPort.cpp
+@@ -0,0 +1,38 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim:set ts=2 sw=2 et tw=78: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/dom/DisplayPortInputPort.h"
++#include "mozilla/dom/DisplayPortInputPortBinding.h"
++
++namespace mozilla {
++namespace dom {
++
++DisplayPortInputPort::DisplayPortInputPort(nsPIDOMWindow* aWindow)
++  : InputPort(aWindow)
++{
++}
++
++DisplayPortInputPort::~DisplayPortInputPort()
++{
++}
++
++/* static */ already_AddRefed<DisplayPortInputPort>
++DisplayPortInputPort::Create(nsPIDOMWindow* aWindow,
++                             nsIInputPortListener* aListener,
++                             nsIInputPortData* aData)
++{
++  nsRefPtr<DisplayPortInputPort> inputport = new DisplayPortInputPort(aWindow);
++  return (inputport->Init(aData, aListener)) ? inputport.forget() : nullptr;
++}
++
++JSObject*
++DisplayPortInputPort::WrapObject(JSContext* aCx)
++{
++  return DisplayPortInputPortBinding::Wrap(aCx, this);
++}
++
++} // namespace dom
++} //namespace mozilla
+diff --git a/dom/inputport/DisplayPortInputPort.h b/dom/inputport/DisplayPortInputPort.h
+new file mode 100644
+index 0000000..828d264
+--- /dev/null
++++ b/dom/inputport/DisplayPortInputPort.h
+@@ -0,0 +1,33 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim:set ts=2 sw=2 et tw=78: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_DisplayPortInputPort_h
++#define mozilla_dom_DisplayPortInputPort_h
++
++#include "mozilla/dom/InputPort.h"
++
++namespace mozilla {
++namespace dom {
++
++class DisplayPortInputPort : public InputPort
++{
++public:
++  static already_AddRefed<DisplayPortInputPort> Create(nsPIDOMWindow* aWindow,
++                                                       nsIInputPortListener* aListener,
++                                                       nsIInputPortData* aData);
++
++  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
++
++private:
++  explicit DisplayPortInputPort(nsPIDOMWindow* aWindow);
++
++  ~DisplayPortInputPort();
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_DisplayPortInputPort_h
+diff --git a/dom/inputport/FakeInputPortService.cpp b/dom/inputport/FakeInputPortService.cpp
+new file mode 100644
+index 0000000..f2b8969
+--- /dev/null
++++ b/dom/inputport/FakeInputPortService.cpp
+@@ -0,0 +1,171 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "FakeInputPortService.h"
++#include "InputPortData.h"
++#include "InputPortServiceRunnables.h"
++#include "mozilla/dom/InputPort.h"
++#include "nsIMutableArray.h"
++#include "nsServiceManagerUtils.h"
++#include "nsITimer.h"
++
++
++namespace mozilla {
++namespace dom {
++
++class PortConnectionChangedCallback MOZ_FINAL : public nsITimerCallback
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  PortConnectionChangedCallback(nsIInputPortData* aInputPortData,
++                                nsIInputPortListener* aInputPortListener,
++                                const bool aIsConnected)
++    : mInputPortData(aInputPortData)
++    , mInputPortListener(aInputPortListener)
++    , mIsConnected(aIsConnected)
++  {}
++
++  NS_IMETHODIMP
++  Notify(nsITimer* aTimer)
++  {
++    InputPortData* portData = static_cast<InputPortData*>(mInputPortData.get());
++    portData->SetConnected(mIsConnected);
++    nsresult rv = mInputPortListener->NotifyConnectionChanged(
++      portData->GetId(), mIsConnected);
++    return rv;
++  }
++
++private:
++  ~PortConnectionChangedCallback() {}
++
++  nsCOMPtr<nsIInputPortData> mInputPortData;
++  nsCOMPtr<nsIInputPortListener> mInputPortListener;
++  bool mIsConnected;
++};
++
++NS_IMPL_ISUPPORTS(PortConnectionChangedCallback, nsITimerCallback)
++
++NS_IMPL_CYCLE_COLLECTION_CLASS(FakeInputPortService)
++
++NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(FakeInputPortService)
++  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInputPortListener)
++  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPortConnectionChangedTimer)
++  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPortDatas)
++NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
++
++NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(FakeInputPortService)
++  tmp->Shutdown();
++  NS_IMPL_CYCLE_COLLECTION_UNLINK(mInputPortListener)
++  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPortConnectionChangedTimer)
++  NS_IMPL_CYCLE_COLLECTION_UNLINK(mPortDatas)
++NS_IMPL_CYCLE_COLLECTION_UNLINK_END
++
++NS_IMPL_CYCLE_COLLECTING_ADDREF(FakeInputPortService)
++NS_IMPL_CYCLE_COLLECTING_RELEASE(FakeInputPortService)
++
++NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(FakeInputPortService)
++  NS_INTERFACE_MAP_ENTRY(nsIInputPortService)
++  NS_INTERFACE_MAP_ENTRY(nsISupports)
++NS_INTERFACE_MAP_END
++
++FakeInputPortService::FakeInputPortService()
++{
++  Init();
++}
++
++FakeInputPortService::~FakeInputPortService()
++{
++  Shutdown();
++}
++
++void
++FakeInputPortService::Init()
++{
++  nsCOMPtr<nsIInputPortData> portData1 =
++      MockInputPort(NS_LITERAL_STRING("1"), NS_LITERAL_STRING("av"), true);
++  mPortDatas.AppendElement(portData1);
++
++  nsCOMPtr<nsIInputPortData> portData2 =
++      MockInputPort(NS_LITERAL_STRING("2"), NS_LITERAL_STRING("displayport"), false);
++  mPortDatas.AppendElement(portData2);
++
++  nsCOMPtr<nsIInputPortData> portData3 =
++      MockInputPort(NS_LITERAL_STRING("3"), NS_LITERAL_STRING("hdmi"), true);
++  mPortDatas.AppendElement(portData3);
++}
++
++void
++FakeInputPortService::Shutdown()
++{
++  if (mPortConnectionChangedTimer) {
++    mPortConnectionChangedTimer->Cancel();
++  }
++}
++
++/* virtual */ NS_IMETHODIMP
++FakeInputPortService::GetInputPortListener(nsIInputPortListener** aInputPortListener)
++{
++  if (!mInputPortListener) {
++    *aInputPortListener = nullptr;
++    return NS_OK;
++  }
++
++  *aInputPortListener = mInputPortListener;
++  NS_ADDREF(*aInputPortListener);
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++FakeInputPortService::SetInputPortListener(nsIInputPortListener* aInputPortListener)
++{
++  mInputPortListener = aInputPortListener;
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++FakeInputPortService::GetInputPorts(nsIInputPortServiceCallback* aCallback)
++{
++  if (!aCallback) {
++    return NS_ERROR_INVALID_ARG;
++  }
++
++  nsCOMPtr<nsIMutableArray> portDataList = do_CreateInstance(NS_ARRAY_CONTRACTID);
++  if (!portDataList) {
++    return NS_ERROR_OUT_OF_MEMORY;
++  }
++
++  for (uint32_t i = 0; i < mPortDatas.Length(); i++) {
++    portDataList->AppendElement(mPortDatas[i], false);
++  }
++
++  mPortConnectionChangedTimer = do_CreateInstance(NS_TIMER_CONTRACTID);
++  NS_ENSURE_TRUE(mPortConnectionChangedTimer, NS_ERROR_OUT_OF_MEMORY);
++  nsRefPtr<PortConnectionChangedCallback> connectionChangedCb =
++    new PortConnectionChangedCallback(mPortDatas[0], mInputPortListener, false);
++  nsresult rv = mPortConnectionChangedTimer->InitWithCallback(
++    connectionChangedCb, 100, nsITimer::TYPE_ONE_SHOT);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  nsCOMPtr<nsIRunnable> runnable =
++    new InputPortServiceNotifyRunnable(aCallback, portDataList);
++  return NS_DispatchToCurrentThread(runnable);
++}
++
++already_AddRefed<nsIInputPortData>
++FakeInputPortService::MockInputPort(const nsAString& aId,
++                                    const nsAString& aType,
++                                    bool aIsConnected)
++{
++  nsCOMPtr<nsIInputPortData> portData = new InputPortData();
++  portData->SetId(aId);
++  portData->SetType(aType);
++  portData->SetConnected(aIsConnected);
++  return portData.forget();
++}
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/inputport/FakeInputPortService.h b/dom/inputport/FakeInputPortService.h
+new file mode 100644
+index 0000000..d99099e
+--- /dev/null
++++ b/dom/inputport/FakeInputPortService.h
+@@ -0,0 +1,55 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_FakeInputPortService_h
++#define mozilla_dom_FakeInputPortService_h
++
++#include "nsCOMPtr.h"
++#include "nsCycleCollectionParticipant.h"
++#include "nsIInputPortService.h"
++#include "nsTArray.h"
++
++#define FAKE_INPUTPORT_SERVICE_CONTRACTID \
++  "@mozilla.org/inputport/fakeinputportservice;1"
++#define FAKE_INPUTPORT_SERVICE_CID \
++  { 0xea6b01c5, 0xad04, 0x4f2a, \
++    { 0x8a, 0xbe, 0x64, 0xdb, 0xa2, 0x22, 0xe3, 0x3d } }
++
++class nsITimer;
++class nsIInputPortData;
++
++namespace mozilla {
++namespace dom {
++
++class FakeInputPortService MOZ_FINAL : public nsIInputPortService
++{
++public:
++  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
++  NS_DECL_CYCLE_COLLECTION_CLASS(FakeInputPortService)
++  NS_DECL_NSIINPUTPORTSERVICE
++
++  FakeInputPortService();
++
++private:
++  ~FakeInputPortService();
++
++  void Init();
++
++  void Shutdown();
++
++  already_AddRefed<nsIInputPortData> MockInputPort(const nsAString& aId,
++                                                   const nsAString& aType,
++                                                   bool aIsConnected);
++
++  nsCOMPtr<nsIInputPortListener> mInputPortListener;
++  nsCOMPtr<nsITimer> mPortConnectionChangedTimer;
++  nsTArray<nsCOMPtr<nsIInputPortData>> mPortDatas;
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_FakeInputPortService_h
+diff --git a/dom/inputport/HDMIInputPort.cpp b/dom/inputport/HDMIInputPort.cpp
+new file mode 100644
+index 0000000..8e7f353
+--- /dev/null
++++ b/dom/inputport/HDMIInputPort.cpp
+@@ -0,0 +1,39 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim:set ts=2 sw=2 et tw=78: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/dom/HDMIInputPort.h"
++#include "mozilla/dom/HDMIInputPortBinding.h"
++
++namespace mozilla {
++namespace dom {
++
++HDMIInputPort::HDMIInputPort(nsPIDOMWindow* aWindow)
++  : InputPort(aWindow)
++{
++}
++
++HDMIInputPort::~HDMIInputPort()
++{
++}
++
++/* static */ already_AddRefed<HDMIInputPort>
++HDMIInputPort::Create(nsPIDOMWindow* aWindow,
++                      nsIInputPortListener* aListener,
++                      nsIInputPortData* aData)
++{
++  nsRefPtr<HDMIInputPort> inputport = new HDMIInputPort(aWindow);
++  return (inputport->Init(aData, aListener)) ? inputport.forget() : nullptr;
++}
++
++
++JSObject*
++HDMIInputPort::WrapObject(JSContext* aCx)
++{
++  return HDMIInputPortBinding::Wrap(aCx, this);
++}
++
++} // namespace dom
++} //namespace mozilla
+diff --git a/dom/inputport/HDMIInputPort.h b/dom/inputport/HDMIInputPort.h
+new file mode 100644
+index 0000000..acc70e6
+--- /dev/null
++++ b/dom/inputport/HDMIInputPort.h
+@@ -0,0 +1,33 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim:set ts=2 sw=2 et tw=78: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_HDMIInputPort_h
++#define mozilla_dom_HDMIInputPort_h
++
++#include "mozilla/dom/InputPort.h"
++
++namespace mozilla {
++namespace dom {
++
++class HDMIInputPort : public InputPort
++{
++public:
++  static already_AddRefed<HDMIInputPort> Create(nsPIDOMWindow* aWindow,
++                                                nsIInputPortListener* aListener,
++                                                nsIInputPortData* aData);
++
++  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
++
++private:
++  explicit HDMIInputPort(nsPIDOMWindow* aWindow);
++
++  ~HDMIInputPort();
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_HDMIInputPort_h
+diff --git a/dom/inputport/InputPort.cpp b/dom/inputport/InputPort.cpp
+new file mode 100644
+index 0000000..ce4a0ff
+--- /dev/null
++++ b/dom/inputport/InputPort.cpp
+@@ -0,0 +1,118 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "InputPortData.h"
++#include "InputPortListeners.h"
++#include "mozilla/AsyncEventDispatcher.h"
++#include "mozilla/dom/InputPort.h"
++#include "DOMMediaStream.h"
++
++namespace mozilla {
++namespace dom {
++
++NS_IMPL_CYCLE_COLLECTION_INHERITED(InputPort, DOMEventTargetHelper,
++                                   mStream,
++                                   mInputPortListener)
++
++NS_IMPL_ADDREF_INHERITED(InputPort, DOMEventTargetHelper)
++NS_IMPL_RELEASE_INHERITED(InputPort, DOMEventTargetHelper)
++
++NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(InputPort)
++NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
++
++InputPort::InputPort(nsPIDOMWindow* aWindow)
++  : DOMEventTargetHelper(aWindow)
++{
++}
++
++InputPort::~InputPort()
++{
++}
++
++bool
++InputPort::Init(nsIInputPortData* aData, nsIInputPortListener* aListener)
++{
++  NS_ENSURE_TRUE(aData, false);
++  NS_ENSURE_TRUE(aListener, false);
++
++  nsresult rv = aData->GetId(mId);
++  NS_ENSURE_SUCCESS(rv, false);
++  if (NS_WARN_IF(mId.IsEmpty())) {
++    return false;
++  }
++
++  mType = static_cast<InputPortData*>(aData)->GetType();
++  if (NS_WARN_IF(mType == InputPortType::EndGuard_)) {
++    return false;
++  }
++
++  aData->GetConnected(&mIsConnected);
++
++  mInputPortListener = static_cast<InputPortListener*>(aListener);
++  mInputPortListener->RegisterInputPort(this);
++
++  return true;
++}
++
++void
++InputPort::Shutdown()
++{
++  if (mInputPortListener) {
++    mInputPortListener->UnregisterInputPort(this);
++  }
++}
++
++/* virtual */ JSObject*
++InputPort::WrapObject(JSContext* aCx)
++{
++  return InputPortBinding::Wrap(aCx, this);
++}
++
++const nsString&
++InputPort::GetId() const
++{
++  return mId;
++}
++
++void
++InputPort::NotifyConnectionChanged(bool aIsConnected)
++{
++  mIsConnected = aIsConnected;
++
++  nsRefPtr<AsyncEventDispatcher> asyncDispatcher =
++    new AsyncEventDispatcher(
++      this, aIsConnected ? NS_LITERAL_STRING("connect") :
++      NS_LITERAL_STRING("disconnect"), false);
++  asyncDispatcher->PostDOMEvent();
++}
++
++void
++InputPort::GetId(nsAString& aId) const
++{
++  aId = mId;
++}
++
++InputPortType
++InputPort::Type() const
++{
++  return mType;
++}
++
++already_AddRefed<DOMMediaStream>
++InputPort::GetStream() const
++{
++  nsRefPtr<DOMMediaStream> stream = mStream;
++  return stream.forget();
++}
++
++bool
++InputPort::Connected() const
++{
++  return mIsConnected;
++}
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/inputport/InputPort.h b/dom/inputport/InputPort.h
+new file mode 100644
+index 0000000..b17fa19
+--- /dev/null
++++ b/dom/inputport/InputPort.h
+@@ -0,0 +1,64 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_InputPort_h
++#define mozilla_dom_InputPort_h
++
++#include "InputPortListeners.h"
++#include "mozilla/DOMEventTargetHelper.h"
++#include "mozilla/dom/InputPortBinding.h"
++#include "nsIInputPortService.h"
++
++namespace mozilla {
++
++class DOMMediaStream;
++
++namespace dom {
++
++class InputPort : public DOMEventTargetHelper
++{
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(InputPort, DOMEventTargetHelper)
++
++  // WebIDL (internal functions)
++  virtual JSObject* WrapObject(JSContext *aCx) MOZ_OVERRIDE;
++
++  const nsString& GetId() const;
++
++  void NotifyConnectionChanged(bool aIsConnected);
++
++  // WebIDL (public APIs)
++  void GetId(nsAString& aId) const;
++
++  virtual InputPortType Type() const;
++
++  already_AddRefed<DOMMediaStream> GetStream() const;
++
++  bool Connected() const;
++
++  IMPL_EVENT_HANDLER(connect);
++  IMPL_EVENT_HANDLER(disconnect);
++
++protected:
++  explicit InputPort(nsPIDOMWindow* aWindow);
++
++  ~InputPort();
++
++  bool Init(nsIInputPortData* aData, nsIInputPortListener* aListener);
++  void Shutdown();
++
++  nsString mId;
++  InputPortType mType;
++  nsRefPtr<DOMMediaStream> mStream;
++  nsRefPtr<InputPortListener> mInputPortListener;
++  bool mIsConnected;
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_InputPort_h
+diff --git a/dom/inputport/InputPortData.cpp b/dom/inputport/InputPortData.cpp
+new file mode 100644
+index 0000000..b7296f5
+--- /dev/null
++++ b/dom/inputport/InputPortData.cpp
+@@ -0,0 +1,112 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "InputPortData.h"
++#include "nsString.h"
++
++namespace mozilla {
++namespace dom {
++
++namespace {
++
++InputPortType
++ToInputPortType(const nsAString& aStr)
++{
++  if (aStr.EqualsLiteral("av")) {
++    return InputPortType::Av;
++  }
++
++  if (aStr.EqualsLiteral("displayport")) {
++    return InputPortType::Displayport;
++  }
++
++  if (aStr.EqualsLiteral("hdmi")) {
++    return InputPortType::Hdmi;
++  }
++
++  return InputPortType::EndGuard_;
++}
++
++} // namespace anonymous
++
++NS_IMPL_ISUPPORTS(InputPortData, nsIInputPortData)
++
++InputPortData::InputPortData()
++{
++}
++
++InputPortData::~InputPortData()
++{
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortData::GetId(nsAString& aId)
++{
++  aId = mId;
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortData::SetId(const nsAString& aId)
++{
++  if (aId.IsEmpty()) {
++    return NS_ERROR_INVALID_ARG;
++  }
++
++  mId = aId;
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortData::GetType(nsAString& aType)
++{
++  aType = mType;
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortData::SetType(const nsAString& aType)
++{
++  if (aType.IsEmpty()) {
++    return NS_ERROR_INVALID_ARG;
++  }
++
++  if (InputPortType::EndGuard_ == ToInputPortType(aType)) {
++    return NS_ERROR_INVALID_ARG;
++  }
++
++  mType = aType;
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortData::GetConnected(bool* aIsConnected)
++{
++  *aIsConnected = mIsConnected;
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortData::SetConnected(const bool aIsConnected)
++{
++  mIsConnected = aIsConnected;
++  return NS_OK;
++}
++
++const nsString&
++InputPortData::GetId() const
++{
++  return mId;
++}
++
++const InputPortType
++InputPortData::GetType() const
++{
++  return ToInputPortType(mType);
++}
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/inputport/InputPortData.h b/dom/inputport/InputPortData.h
+new file mode 100644
+index 0000000..651ed0f
+--- /dev/null
++++ b/dom/inputport/InputPortData.h
+@@ -0,0 +1,41 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_InputPortData_h
++#define mozilla_dom_InputPortData_h
++
++#include "mozilla/dom/InputPortBinding.h"
++#include "nsIInputPortService.h"
++
++class nsString;
++
++namespace mozilla {
++namespace dom {
++
++class InputPortData MOZ_FINAL : public nsIInputPortData
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIINPUTPORTDATA
++
++  InputPortData();
++
++  const nsString& GetId() const;
++
++  const InputPortType GetType() const;
++
++private:
++  ~InputPortData();
++
++  nsString mId;
++  nsString mType;
++  bool mIsConnected;
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_InputPortData_h
+diff --git a/dom/inputport/InputPortListeners.cpp b/dom/inputport/InputPortListeners.cpp
+new file mode 100644
+index 0000000..d6ad904
+--- /dev/null
++++ b/dom/inputport/InputPortListeners.cpp
+@@ -0,0 +1,50 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "InputPortListeners.h"
++#include "mozilla/dom/InputPort.h"
++
++namespace mozilla {
++namespace dom {
++
++NS_IMPL_CYCLE_COLLECTION(InputPortListener, mInputPorts)
++
++NS_IMPL_CYCLE_COLLECTING_ADDREF(InputPortListener)
++NS_IMPL_CYCLE_COLLECTING_RELEASE(InputPortListener)
++
++NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(InputPortListener)
++  NS_INTERFACE_MAP_ENTRY(nsIInputPortListener)
++  NS_INTERFACE_MAP_ENTRY(nsISupports)
++NS_INTERFACE_MAP_END
++
++void
++InputPortListener::RegisterInputPort(InputPort* aPort)
++{
++  mInputPorts.AppendElement(aPort);
++}
++
++void
++InputPortListener::UnregisterInputPort(InputPort* aPort)
++{
++  mInputPorts.RemoveElement(aPort);
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortListener::NotifyConnectionChanged(const nsAString& aPortId,
++                                           bool aIsConnected)
++{
++  for (uint32_t i = 0; i < mInputPorts.Length(); ++i) {
++    if (aPortId.Equals(mInputPorts[i]->GetId())) {
++      mInputPorts[i]->NotifyConnectionChanged(aIsConnected);
++      break;
++    }
++  }
++
++  return NS_OK;
++}
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/inputport/InputPortListeners.h b/dom/inputport/InputPortListeners.h
+new file mode 100644
+index 0000000..c7e4168
+--- /dev/null
++++ b/dom/inputport/InputPortListeners.h
+@@ -0,0 +1,39 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_InputPortListeners_h
++#define mozilla_dom_InputPortListeners_h
++
++#include "nsCycleCollectionParticipant.h"
++#include "nsIInputPortService.h"
++#include "nsTArray.h"
++
++namespace mozilla {
++namespace dom {
++
++class InputPort;
++
++class InputPortListener MOZ_FINAL : public nsIInputPortListener
++{
++public:
++  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
++  NS_DECL_CYCLE_COLLECTION_CLASS(InputPortListener)
++  NS_DECL_NSIINPUTPORTLISTENER
++
++  void RegisterInputPort(InputPort* aPort);
++
++  void UnregisterInputPort(InputPort* aPort);
++
++private:
++  ~InputPortListener() {}
++
++  nsTArray<nsRefPtr<InputPort>> mInputPorts;
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_InputPortListeners_h
+diff --git a/dom/inputport/InputPortManager.cpp b/dom/inputport/InputPortManager.cpp
+new file mode 100644
+index 0000000..7394c3e
+--- /dev/null
++++ b/dom/inputport/InputPortManager.cpp
+@@ -0,0 +1,134 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "InputPortServiceCallbacks.h"
++#include "InputPortServiceFactory.h"
++#include "mozilla/dom/InputPort.h"
++#include "mozilla/dom/InputPortManager.h"
++#include "mozilla/dom/InputPortManagerBinding.h"
++#include "mozilla/dom/Promise.h"
++#include "nsIInputPortService.h"
++
++namespace mozilla {
++namespace dom {
++
++NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(InputPortManager,
++                                      mParent,
++                                      mInputPortService,
++                                      mPendingGetInputPortsPromises,
++                                      mInputPorts)
++
++NS_IMPL_CYCLE_COLLECTING_ADDREF(InputPortManager)
++NS_IMPL_CYCLE_COLLECTING_RELEASE(InputPortManager)
++
++NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(InputPortManager)
++  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
++  NS_INTERFACE_MAP_ENTRY(nsISupports)
++NS_INTERFACE_MAP_END
++
++InputPortManager::InputPortManager(nsPIDOMWindow* aWindow)
++  : mParent(aWindow)
++  , mIsReady(false)
++{
++}
++
++InputPortManager::~InputPortManager()
++{
++}
++
++/* static */ already_AddRefed<InputPortManager>
++InputPortManager::Create(nsPIDOMWindow* aWindow)
++{
++  nsRefPtr<InputPortManager> manager = new InputPortManager(aWindow);
++  return manager->Init() ? manager.forget() : nullptr;
++}
++
++bool
++InputPortManager::Init()
++{
++  mInputPortService = InputPortServiceFactory::AutoCreateInputPortService();
++  NS_ENSURE_TRUE(mInputPortService, false);
++
++  nsCOMPtr<nsIInputPortServiceCallback> callback =
++    new InputPortServicePortGetterCallback(this);
++  nsresult rv = mInputPortService->GetInputPorts(callback);
++  NS_ENSURE_SUCCESS(rv, false);
++
++  return true;
++}
++
++nsPIDOMWindow*
++InputPortManager::GetParentObject() const
++{
++  return mParent;
++}
++
++/* virtual */ JSObject*
++InputPortManager::WrapObject(JSContext* aCx)
++{
++  return InputPortManagerBinding::Wrap(aCx, this);
++}
++
++void
++InputPortManager::RejectPendingGetInputPortsPromises(nsresult aRv)
++{
++  // Reject pending promises.
++  uint32_t length = mPendingGetInputPortsPromises.Length();
++  for(uint32_t i = 0; i < length; i++) {
++    mPendingGetInputPortsPromises[i]->MaybeReject(aRv);
++  }
++  mPendingGetInputPortsPromises.Clear();
++}
++
++nsIInputPortService*
++InputPortManager::GetInputPortService()
++{
++  return mInputPortService;
++}
++
++
++nsresult
++InputPortManager::SetInputPorts(const nsTArray<nsRefPtr<InputPort>>& aPorts)
++{
++  // Should be called only when InputPortManager hasn't been ready yet.
++  if (mIsReady) {
++    return NS_ERROR_DOM_INVALID_STATE_ERR;
++  }
++
++  mInputPorts = aPorts;
++  mIsReady = true;
++
++  // Resolve pending promises.
++  uint32_t length = mPendingGetInputPortsPromises.Length();
++  for(uint32_t i = 0; i < length; i++) {
++    mPendingGetInputPortsPromises[i]->MaybeResolve(mInputPorts);
++  }
++  mPendingGetInputPortsPromises.Clear();
++  return NS_OK;
++}
++
++already_AddRefed<Promise>
++InputPortManager::GetInputPorts(ErrorResult& aRv)
++{
++  nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(GetParentObject());
++  MOZ_ASSERT(global);
++
++  nsRefPtr<Promise> promise = Promise::Create(global, aRv);
++  if (NS_WARN_IF(aRv.Failed())) {
++    return nullptr;
++  }
++
++  if (mIsReady) {
++    promise->MaybeResolve(mInputPorts);
++  } else {
++    mPendingGetInputPortsPromises.AppendElement(promise);
++  }
++
++  return promise.forget();
++}
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/inputport/InputPortManager.h b/dom/inputport/InputPortManager.h
+new file mode 100644
+index 0000000..4e00f9c
+--- /dev/null
++++ b/dom/inputport/InputPortManager.h
+@@ -0,0 +1,60 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_InputPortManager_h
++#define mozilla_dom_InputPortManager_h
++
++#include "nsWrapperCache.h"
++
++class nsIInputPortService;
++
++namespace mozilla {
++namespace dom {
++
++class Promise;
++class InputPort;
++
++class InputPortManager MOZ_FINAL : public nsISupports
++                                 , public nsWrapperCache
++{
++public:
++  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
++  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(InputPortManager)
++
++  static already_AddRefed<InputPortManager> Create(nsPIDOMWindow* aWindow);
++
++  // WebIDL (internal functions)
++  nsPIDOMWindow* GetParentObject() const;
++
++  virtual JSObject* WrapObject(JSContext *aCx) MOZ_OVERRIDE;
++
++  void RejectPendingGetInputPortsPromises(nsresult aRv);
++
++  nsIInputPortService* GetInputPortService();
++
++  nsresult SetInputPorts(const nsTArray<nsRefPtr<InputPort>>& aPorts);
++
++  // WebIDL (public APIs)
++  already_AddRefed<Promise> GetInputPorts(ErrorResult& aRv);
++
++private:
++  explicit InputPortManager(nsPIDOMWindow* aWindow);
++
++  ~InputPortManager();
++
++  bool Init();
++
++  nsTArray<nsRefPtr<Promise>> mPendingGetInputPortsPromises;
++  nsTArray<nsRefPtr<InputPort>> mInputPorts;
++  nsCOMPtr<nsPIDOMWindow> mParent;
++  nsCOMPtr<nsIInputPortService> mInputPortService;
++  bool mIsReady;
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_InputPortManager_h__
+diff --git a/dom/inputport/InputPortServiceCallbacks.cpp b/dom/inputport/InputPortServiceCallbacks.cpp
+new file mode 100644
+index 0000000..8a8fbd7
+--- /dev/null
++++ b/dom/inputport/InputPortServiceCallbacks.cpp
+@@ -0,0 +1,109 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "InputPortData.h"
++#include "InputPortServiceCallbacks.h"
++#include "mozilla/dom/InputPort.h"
++#include "mozilla/dom/InputPortManager.h"
++#include "nsArrayUtils.h"
++
++namespace mozilla {
++namespace dom {
++
++
++/*
++ * Implementation of InputPortServicePortGetterCallback
++ */
++
++NS_IMPL_CYCLE_COLLECTION(InputPortServicePortGetterCallback, mManager)
++
++NS_IMPL_CYCLE_COLLECTING_ADDREF(InputPortServicePortGetterCallback)
++NS_IMPL_CYCLE_COLLECTING_RELEASE(InputPortServicePortGetterCallback)
++
++NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(InputPortServicePortGetterCallback)
++  NS_INTERFACE_MAP_ENTRY(nsISupports)
++  NS_INTERFACE_MAP_ENTRY(nsIInputPortServiceCallback)
++NS_INTERFACE_MAP_END
++
++InputPortServicePortGetterCallback::InputPortServicePortGetterCallback(
++    InputPortManager* aManager)
++  : mManager(aManager)
++{
++  MOZ_ASSERT(mManager);
++}
++
++InputPortServicePortGetterCallback::~InputPortServicePortGetterCallback()
++{
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortServicePortGetterCallback::NotifySuccess(nsIArray* aDataList)
++{
++  if (!aDataList) {
++    mManager->RejectPendingGetInputPortsPromises(NS_ERROR_DOM_ABORT_ERR);
++    return NS_ERROR_INVALID_ARG;
++  }
++
++  uint32_t length;
++  nsresult rv = aDataList->GetLength(&length);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  nsCOMPtr<nsIInputPortListener> portListener;
++  mManager->GetInputPortService()->GetInputPortListener(
++    getter_AddRefs(portListener));
++
++  nsTArray<nsRefPtr<InputPort>> ports(length);
++  for (uint32_t i = 0; i < length; i++) {
++    nsCOMPtr<nsIInputPortData> portData = do_QueryElementAt(aDataList, i);
++    if (NS_WARN_IF(!portData)) {
++      continue;
++    }
++
++    InputPortData* data = static_cast<InputPortData*>(portData.get());
++    nsRefPtr<InputPort> port;
++    switch (data->GetType()) {
++    case InputPortType::Av:
++      port = AVInputPort::Create(mManager->GetParentObject(), portListener,
++        portData);
++      break;
++    case InputPortType::Displayport:
++      port = DisplayPortInputPort::Create(mManager->GetParentObject(),
++        portListener, portData);
++      break;
++    case InputPortType::Hdmi:
++      port = HDMIInputPort::Create(mManager->GetParentObject(), portListener,
++        portData);
++      break;
++    }
++    NS_ENSURE_TRUE(port, NS_ERROR_DOM_ABORT_ERR);
++
++    ports.AppendElement(port);
++  }
++  mManager->SetInputPorts(ports);
++
++  return NS_OK;
++}
++
++/* virtual */ NS_IMETHODIMP
++InputPortServicePortGetterCallback::NotifyError(uint16_t aErrorCode)
++{
++  switch (aErrorCode) {
++  case nsIInputPortServiceCallback::INPUTPORT_ERROR_FAILURE:
++  case nsIInputPortServiceCallback::INPUTPORT_ERROR_INVALID_ARG:
++    mManager->RejectPendingGetInputPortsPromises(NS_ERROR_DOM_ABORT_ERR);
++    return NS_OK;
++  case nsIInputPortServiceCallback::INPUTPORT_ERROR_NOT_SUPPORTED:
++    mManager->RejectPendingGetInputPortsPromises(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
++    return NS_OK;
++  }
++
++  mManager->RejectPendingGetInputPortsPromises(NS_ERROR_DOM_ABORT_ERR);
++  return NS_ERROR_ILLEGAL_VALUE;
++}
++
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/inputport/InputPortServiceCallbacks.h b/dom/inputport/InputPortServiceCallbacks.h
+new file mode 100644
+index 0000000..da54047
+--- /dev/null
++++ b/dom/inputport/InputPortServiceCallbacks.h
+@@ -0,0 +1,36 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_InputPortServiceCallbacks_h
++#define mozilla_dom_InputPortServiceCallbacks_h
++
++#include "nsIInputPortService.h"
++
++namespace mozilla {
++namespace dom {
++
++class InputPortManager;
++
++class InputPortServicePortGetterCallback MOZ_FINAL
++  : public nsIInputPortServiceCallback
++{
++public:
++  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
++  NS_DECL_NSIINPUTPORTSERVICECALLBACK
++  NS_DECL_CYCLE_COLLECTION_CLASS(InputPortServicePortGetterCallback)
++
++  explicit InputPortServicePortGetterCallback(InputPortManager* aManager);
++
++private:
++  ~InputPortServicePortGetterCallback();
++
++  nsRefPtr<InputPortManager> mManager;
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_InputPortServiceCallbacks_h
+diff --git a/dom/inputport/InputPortServiceFactory.cpp b/dom/inputport/InputPortServiceFactory.cpp
+new file mode 100644
+index 0000000..4fd071a
+--- /dev/null
++++ b/dom/inputport/InputPortServiceFactory.cpp
+@@ -0,0 +1,46 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "FakeInputPortService.h"
++#include "InputPortListeners.h"
++#include "InputPortServiceFactory.h"
++#include "mozilla/Preferences.h"
++#include "nsIInputPortService.h"
++#include "nsServiceManagerUtils.h"
++
++namespace mozilla {
++namespace dom {
++
++/* static */ already_AddRefed<FakeInputPortService>
++InputPortServiceFactory::CreateFakeInputPortService()
++{
++  nsRefPtr<FakeInputPortService> service = new FakeInputPortService();
++  return service.forget();
++}
++
++/* static */ already_AddRefed<nsIInputPortService>
++InputPortServiceFactory::AutoCreateInputPortService()
++{
++  nsresult rv;
++  nsCOMPtr<nsIInputPortService> service =
++    do_CreateInstance(INPUTPORT_SERVICE_CONTRACTID);
++  if (!service) {
++    // Fallback to the fake service.
++    service = do_CreateInstance(FAKE_INPUTPORT_SERVICE_CONTRACTID, &rv);
++    if (NS_WARN_IF(NS_FAILED(rv))) {
++      return nullptr;
++    }
++  }
++
++  rv = service->SetInputPortListener(new InputPortListener());
++  if (NS_WARN_IF(NS_FAILED(rv))) {
++    return nullptr;
++  }
++
++  return service.forget();
++}
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/inputport/InputPortServiceFactory.h b/dom/inputport/InputPortServiceFactory.h
+new file mode 100644
+index 0000000..6c32756
+--- /dev/null
++++ b/dom/inputport/InputPortServiceFactory.h
+@@ -0,0 +1,30 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_InputPortServiceFactory_h
++#define mozilla_dom_InputPortServiceFactory_h
++
++#include "nsCOMPtr.h"
++
++class nsIInputPortService;
++
++namespace mozilla {
++namespace dom {
++
++class FakeInputPortService;
++
++class InputPortServiceFactory
++{
++public:
++  static already_AddRefed<FakeInputPortService> CreateFakeInputPortService();
++
++  static already_AddRefed<nsIInputPortService> AutoCreateInputPortService();
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_InputPortServiceFactory_h
+diff --git a/dom/inputport/InputPortServiceRunnables.h b/dom/inputport/InputPortServiceRunnables.h
+new file mode 100644
+index 0000000..fc0b380
+--- /dev/null
++++ b/dom/inputport/InputPortServiceRunnables.h
+@@ -0,0 +1,56 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set ts=8 sts=2 et sw=2 tw=80: */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_dom_InputPortServiceRunnables_h
++#define mozilla_dom_InputPortServiceRunnables_h
++
++#include "nsIInputPortService.h"
++#include "nsThreadUtils.h"
++
++namespace mozilla {
++namespace dom {
++
++/*
++ * NOTE: The callbacks passing to |nsIInputPortService| must be called asynchronously.
++ * In the implementation, actual runnable objects may need to be created and
++ * call the callback off of the runnables, after the function returns. Here are
++ * some ready-made runnables and could be used in the following way.
++ *
++ * nsCOMPtr<nsIRunnable> runnable =
++ *   new InputPortServiceNotifyRunnable(callback, dataList, optional errorCode);
++ * return NS_DispatchToCurrentThread(runnable);
++ */
++class InputPortServiceNotifyRunnable MOZ_FINAL : public nsRunnable
++{
++public:
++  InputPortServiceNotifyRunnable(
++      nsIInputPortServiceCallback* aCallback,
++      nsIArray* aDataList,
++      uint16_t aErrorCode = nsIInputPortServiceCallback::INPUTPORT_ERROR_OK)
++    : mCallback(aCallback)
++    , mDataList(aDataList)
++    , mErrorCode(aErrorCode)
++  {}
++
++  NS_IMETHOD Run()
++  {
++    if (mErrorCode == nsIInputPortServiceCallback::INPUTPORT_ERROR_OK) {
++      return mCallback->NotifySuccess(mDataList);
++    } else {
++      return mCallback->NotifyError(mErrorCode);
++    }
++  }
++
++private:
++  nsCOMPtr<nsIInputPortServiceCallback> mCallback;
++  nsCOMPtr<nsIArray> mDataList;
++  uint16_t mErrorCode;
++};
++
++} // namespace dom
++} // namespace mozilla
++
++#endif // mozilla_dom_InputPortServiceRunnables_h
+diff --git a/dom/inputport/moz.build b/dom/inputport/moz.build
+new file mode 100644
+index 0000000..9718a0c
+--- /dev/null
++++ b/dom/inputport/moz.build
+@@ -0,0 +1,47 @@
++# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
++# vim: set filetype=python:
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++EXPORTS.mozilla.dom += [
++    'AVInputPort.h',
++    'DisplayPortInputPort.h',
++    'HDMIInputPort.h',
++    'InputPort.h',
++    'InputPortManager.h',
++]
++
++EXPORTS += [
++    'FakeInputPortService.h',
++    'InputPortData.h',
++    'InputPortListeners.h',
++    'InputPortServiceCallbacks.h',
++    'InputPortServiceFactory.h',
++    'InputPortServiceRunnables.h',
++]
++
++UNIFIED_SOURCES += [
++    'AVInputPort.cpp',
++    'DisplayPortInputPort.cpp',
++    'FakeInputPortService.cpp',
++    'HDMIInputPort.cpp',
++    'InputPort.cpp',
++    'InputPortData.cpp',
++    'InputPortListeners.cpp',
++    'InputPortManager.cpp',
++    'InputPortServiceCallbacks.cpp',
++    'InputPortServiceFactory.cpp',
++]
++
++XPIDL_SOURCES += [
++    'nsIInputPortService.idl',
++]
++
++XPIDL_MODULE = 'dom_inputport'
++
++include('/ipc/chromium/chromium-config.mozbuild')
++
++FINAL_LIBRARY = 'xul'
++
++FAIL_ON_WARNINGS = True
+diff --git a/dom/inputport/nsIInputPortService.idl b/dom/inputport/nsIInputPortService.idl
+new file mode 100644
+index 0000000..b6064f0
+--- /dev/null
++++ b/dom/inputport/nsIInputPortService.idl
+@@ -0,0 +1,75 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsISupports.idl"
++
++interface nsIArray;
++
++%{C++
++#define INPUTPORT_DATA_CID \
++  { 0x90b192d1, 0x357a, 0x4793, { 0xab, 0x58, 0x04, 0xee, 0x21, 0x62, 0x27, 0xda } }
++#define INPUTPORT_DATA_CONTRACTID \
++  "@mozilla.org/inputport/inputportdata;1"
++%}
++
++/**
++ * XPCOM component which acts as the container for input port data.
++ */
++[scriptable, builtinclass, uuid(244a2b1d-aa1f-4188-a639-ddb56c554b6d)]
++interface nsIInputPortData : nsISupports
++{
++  attribute DOMString id;
++  attribute DOMString type;
++  attribute boolean connected;
++};
++
++[builtinclass, uuid(32a62e7c-f698-4846-81f7-617c87854d32)]
++interface nsIInputPortListener : nsISupports
++{
++  void notifyConnectionChanged(in DOMString portId,
++                               in boolean isConnected);
++};
++
++[builtinclass, uuid(c2a47757-25f6-4bc8-bd27-c23af2d87381)]
++interface nsIInputPortServiceCallback : nsISupports
++{
++  const unsigned short INPUTPORT_ERROR_OK = 0;
++  const unsigned short INPUTPORT_ERROR_FAILURE = 1;
++  const unsigned short INPUTPORT_ERROR_INVALID_ARG = 2;
++  const unsigned short INPUTPORT_ERROR_NOT_SUPPORTED = 3;
++
++  /**
++   * Called when something wrong happens.
++   *
++   * @param errorCode Error code listed above from the underlying layer.
++   */
++  void notifyError(in unsigned short errorCode);
++
++  /**
++   * Called when the operation succeeds.
++   *
++   * @param dataList A list of data.
++   *                 An array of |nsIInputPortData| when used for |getInputPorts()|.
++   *
++   * NOTE: |nsIArray| is adopted to prevent this interface from being split into
++   * multiple interfaces with different |notifySuccess|. Though the
++   * implementation of TV service may need |nsIMutableArray| to fill in the
++   * array, it doesn't seem necessary for other places to use the mutable one.
++   */
++  void notifySuccess([optional] in nsIArray dataList);
++};
++
++
++%{C++
++#define INPUTPORT_SERVICE_CONTRACTID \
++  "@mozilla.org/inputport/inputportservice;1"
++%}
++
++[uuid(6214dae0-840e-11e4-b4a9-0800200c9a66)]
++interface nsIInputPortService : nsISupports
++{
++  attribute nsIInputPortListener inputPortListener;
++
++  void getInputPorts(in nsIInputPortServiceCallback callback);
++};
+diff --git a/dom/moz.build b/dom/moz.build
+index 06aa5ec..2883aeb 100644
+--- a/dom/moz.build
++++ b/dom/moz.build
+@@ -59,16 +59,17 @@ DIRS += [
+     'encoding',
+     'events',
+     'fetch',
+     'filehandle',
+     'filesystem',
+     'fmradio',
+     'geolocation',
+     'html',
++    'inputport',
+     'json',
+     'jsurl',
+     'asmjscache',
+     'mathml',
+     'media',
+     'messages',
+     'mobileconnection',
+     'notification',
+diff --git a/dom/webidl/AVInputPort.webidl b/dom/webidl/AVInputPort.webidl
+new file mode 100644
+index 0000000..5cc1e84
+--- /dev/null
++++ b/dom/webidl/AVInputPort.webidl
+@@ -0,0 +1,8 @@
++/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++ interface AVInputPort : InputPort {
++ };
+diff --git a/dom/webidl/DisplayPortInputPort.webidl b/dom/webidl/DisplayPortInputPort.webidl
+new file mode 100644
+index 0000000..6a4abf6
+--- /dev/null
++++ b/dom/webidl/DisplayPortInputPort.webidl
+@@ -0,0 +1,8 @@
++/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++ interface DisplayPortInputPort : InputPort {
++ };
+diff --git a/dom/webidl/HDMIInputPort.webidl b/dom/webidl/HDMIInputPort.webidl
+new file mode 100644
+index 0000000..6b214ed
+--- /dev/null
++++ b/dom/webidl/HDMIInputPort.webidl
+@@ -0,0 +1,8 @@
++/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++ interface HDMIInputPort : InputPort {
++ };
+diff --git a/dom/webidl/InputPort.webidl b/dom/webidl/InputPort.webidl
+new file mode 100644
+index 0000000..098f35f
+--- /dev/null
++++ b/dom/webidl/InputPort.webidl
+@@ -0,0 +1,17 @@
++/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++enum InputPortType { "av", "displayport", "hdmi" };
++
++[Pref="dom.inputport.enabled", CheckPermissions="inputport", AvailableIn=CertifiedApps]
++interface InputPort : EventTarget {
++  readonly attribute DOMString id;
++  readonly attribute InputPortType type;
++  readonly attribute MediaStream? stream;
++  readonly attribute boolean connected;
++  attribute EventHandler onconnect;
++  attribute EventHandler ondisconnect;
++};
+diff --git a/dom/webidl/InputPortManager.webidl b/dom/webidl/InputPortManager.webidl
+new file mode 100644
+index 0000000..e7b7d32
+--- /dev/null
++++ b/dom/webidl/InputPortManager.webidl
+@@ -0,0 +1,11 @@
++/* -*- Mode: IDL; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++[Pref="dom.inputport.enabled", CheckPermissions="inputport", AvailableIn=CertifiedApps]
++ interface InputPortManager {
++   [Throws]
++   Promise<sequence<InputPort>> getInputPorts();
++ };
+diff --git a/dom/webidl/Navigator.webidl b/dom/webidl/Navigator.webidl
+index e78a9a4..cbb3de8 100644
+--- a/dom/webidl/Navigator.webidl
++++ b/dom/webidl/Navigator.webidl
+@@ -407,16 +407,21 @@ partial interface Navigator {
+                      optional (ArrayBufferView or Blob or DOMString or FormData)? data = null);
+ };
+ 
+ partial interface Navigator {
+   [Pref="dom.tv.enabled", CheckPermissions="tv", Func="Navigator::HasTVSupport"]
+   readonly attribute TVManager? tv;
+ };
+ 
++partial interface Navigator {
++  [Pref="dom.inputport.enabled", CheckPermissions="inputport", AvailableIn=CertifiedApps]
++  readonly attribute InputPortManager? inputPortManager;
++};
++
+ #ifdef MOZ_EME
+ partial interface Navigator {
+   [Pref="media.eme.apiVisible", NewObject]
+   Promise<MediaKeySystemAccess>
+   requestMediaKeySystemAccess(DOMString keySystem,
+                               optional sequence<MediaKeySystemOptions> supportedConfigurations);
+ };
+ #endif
+diff --git a/dom/webidl/moz.build b/dom/webidl/moz.build
+index 265e00b..1515478 100644
+--- a/dom/webidl/moz.build
++++ b/dom/webidl/moz.build
+@@ -42,16 +42,17 @@ WEBIDL_FILES = [
+     'AudioListener.webidl',
+     'AudioNode.webidl',
+     'AudioParam.webidl',
+     'AudioProcessingEvent.webidl',
+     'AudioStreamTrack.webidl',
+     'AudioTrack.webidl',
+     'AudioTrackList.webidl',
+     'AutocompleteInfo.webidl',
++    'AVInputPort.webidl',
+     'BarProp.webidl',
+     'BatteryManager.webidl',
+     'BeforeAfterKeyboardEvent.webidl',
+     'BeforeUnloadEvent.webidl',
+     'BiquadFilterNode.webidl',
+     'Blob.webidl',
+     'BoxObject.webidl',
+     'BroadcastChannel.webidl',
+@@ -98,16 +99,17 @@ WEBIDL_FILES = [
+     'DataStoreImpl.webidl',
+     'DataTransfer.webidl',
+     'DedicatedWorkerGlobalScope.webidl',
+     'DelayNode.webidl',
+     'DesktopNotification.webidl',
+     'DeviceMotionEvent.webidl',
+     'DeviceStorage.webidl',
+     'Directory.webidl',
++    'DisplayPortInputPort.webidl',
+     'Document.webidl',
+     'DocumentFragment.webidl',
+     'DocumentType.webidl',
+     'DOMCursor.webidl',
+     'DOMError.webidl',
+     'DOMException.webidl',
+     'DOMImplementation.webidl',
+     'DOMMatrix.webidl',
+@@ -147,16 +149,17 @@ WEBIDL_FILES = [
+     'FontFaceSet.webidl',
+     'FontFaceSource.webidl',
+     'FormData.webidl',
+     'Function.webidl',
+     'GainNode.webidl',
+     'Geolocation.webidl',
+     'GeometryUtils.webidl',
+     'GetUserMediaRequest.webidl',
++    'HDMIInputPort.webidl',
+     'Headers.webidl',
+     'History.webidl',
+     'HTMLAllCollection.webidl',
+     'HTMLAnchorElement.webidl',
+     'HTMLAppletElement.webidl',
+     'HTMLAreaElement.webidl',
+     'HTMLAudioElement.webidl',
+     'HTMLBaseElement.webidl',
+@@ -244,16 +247,18 @@ WEBIDL_FILES = [
+     'IDBTransaction.webidl',
+     'IDBVersionChangeEvent.webidl',
+     'Identity.webidl',
+     'ImageCapture.webidl',
+     'ImageData.webidl',
+     'ImageDocument.webidl',
+     'InputEvent.webidl',
+     'InputMethod.webidl',
++    'InputPort.webidl',
++    'InputPortManager.webidl',
+     'InspectorUtils.webidl',
+     'InstallEvent.webidl',
+     'InterAppConnection.webidl',
+     'InterAppConnectionRequest.webidl',
+     'InterAppMessagePort.webidl',
+     'KeyAlgorithm.webidl',
+     'KeyboardEvent.webidl',
+     'KeyEvent.webidl',
+diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
+index eb8f8d6..ad36af0 100644
+--- a/layout/build/nsLayoutModule.cpp
++++ b/layout/build/nsLayoutModule.cpp
+@@ -235,16 +235,21 @@ static void Shutdown();
+ #include "nsITelephonyService.h"
+ #include "nsIVoicemailService.h"
+ 
+ #include "mozilla/dom/FakeTVService.h"
+ #include "mozilla/dom/TVServiceFactory.h"
+ #include "mozilla/dom/TVTypes.h"
+ #include "nsITVService.h"
+ 
++#include "FakeInputPortService.h"
++#include "InputPortData.h"
++#include "InputPortServiceFactory.h"
++#include "nsIInputPortService.h"
++
+ #ifdef MOZ_WIDGET_GONK
+ #include "GonkGPSGeolocationProvider.h"
+ #endif
+ #include "MediaManager.h"
+ 
+ #include "GMPService.h"
+ 
+ #include "mozilla/dom/presentation/PresentationDeviceManager.h"
+@@ -380,17 +385,19 @@ NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(nsIVoicemailService,
+ #endif
+ NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(FakeTVService,
+                                          TVServiceFactory::CreateFakeTVService)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(TVTunerData)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(TVChannelData)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(TVProgramData)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(PresentationDeviceManager)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(TextInputProcessor)
+-
++NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(FakeInputPortService,
++                                         InputPortServiceFactory::CreateFakeInputPortService)
++NS_GENERIC_FACTORY_CONSTRUCTOR(InputPortData)
+ //-----------------------------------------------------------------------------
+ 
+ static bool gInitialized = false;
+ 
+ // Perform our one-time intialization for this module
+ 
+ // static
+ nsresult
+@@ -822,16 +829,19 @@ NS_DEFINE_NAMED_CID(NS_SYNTHVOICEREGISTRY_CID);
+ #ifdef ACCESSIBILITY
+ NS_DEFINE_NAMED_CID(NS_ACCESSIBILITY_SERVICE_CID);
+ #endif
+ NS_DEFINE_NAMED_CID(FAKE_TV_SERVICE_CID);
+ NS_DEFINE_NAMED_CID(TV_TUNER_DATA_CID);
+ NS_DEFINE_NAMED_CID(TV_CHANNEL_DATA_CID);
+ NS_DEFINE_NAMED_CID(TV_PROGRAM_DATA_CID);
+ 
++NS_DEFINE_NAMED_CID(FAKE_INPUTPORT_SERVICE_CID);
++NS_DEFINE_NAMED_CID(INPUTPORT_DATA_CID);
++
+ NS_DEFINE_NAMED_CID(GECKO_MEDIA_PLUGIN_SERVICE_CID);
+ 
+ NS_DEFINE_NAMED_CID(PRESENTATION_DEVICE_MANAGER_CID);
+ 
+ NS_DEFINE_NAMED_CID(TEXT_INPUT_PROCESSOR_CID);
+ 
+ static nsresult
+ CreateWindowCommandTableConstructor(nsISupports *aOuter,
+@@ -1121,16 +1131,18 @@ static const mozilla::Module::CIDEntry kLayoutCIDs[] = {
+   { &kNS_VOICEMAIL_SERVICE_CID, false, nullptr, nsIVoicemailServiceConstructor },
+ #endif
+   { &kFAKE_TV_SERVICE_CID, false, nullptr, FakeTVServiceConstructor },
+   { &kTV_TUNER_DATA_CID, false, nullptr, TVTunerDataConstructor },
+   { &kTV_CHANNEL_DATA_CID, false, nullptr, TVChannelDataConstructor },
+   { &kTV_PROGRAM_DATA_CID, false, nullptr, TVProgramDataConstructor },
+   { &kPRESENTATION_DEVICE_MANAGER_CID, false, nullptr, PresentationDeviceManagerConstructor },
+   { &kTEXT_INPUT_PROCESSOR_CID, false, nullptr, TextInputProcessorConstructor },
++  { &kFAKE_INPUTPORT_SERVICE_CID, false, nullptr, FakeInputPortServiceConstructor },
++  { &kINPUTPORT_DATA_CID, false, nullptr, InputPortDataConstructor },
+   { nullptr }
+ };
+ 
+ static const mozilla::Module::ContractIDEntry kLayoutContracts[] = {
+   XPCONNECT_CONTRACTS
+   { "@mozilla.org/layout/xul-boxobject;1", &kNS_BOXOBJECT_CID },
+ #ifdef MOZ_XUL
+   { "@mozilla.org/layout/xul-boxobject-listbox;1", &kNS_LISTBOXOBJECT_CID },
+@@ -1287,16 +1299,18 @@ static const mozilla::Module::ContractIDEntry kLayoutContracts[] = {
+   { TV_PROGRAM_DATA_CONTRACTID, &kTV_PROGRAM_DATA_CID },
+   { "@mozilla.org/gecko-media-plugin-service;1",  &kGECKO_MEDIA_PLUGIN_SERVICE_CID },
+ #ifndef DISABLE_MOZ_RIL_GEOLOC
+   { NS_MOBILE_CONNECTION_SERVICE_CONTRACTID, &kNS_MOBILE_CONNECTION_SERVICE_CID },
+   { NS_VOICEMAIL_SERVICE_CONTRACTID, &kNS_VOICEMAIL_SERVICE_CID },
+ #endif
+   { PRESENTATION_DEVICE_MANAGER_CONTRACTID, &kPRESENTATION_DEVICE_MANAGER_CID },
+   { "@mozilla.org/text-input-processor;1", &kTEXT_INPUT_PROCESSOR_CID },
++  { FAKE_INPUTPORT_SERVICE_CONTRACTID, &kFAKE_INPUTPORT_SERVICE_CID },
++  { INPUTPORT_DATA_CONTRACTID, &kINPUTPORT_DATA_CID },
+   { nullptr }
+ };
+ 
+ static const mozilla::Module::CategoryEntry kLayoutCategories[] = {
+   XPCONNECT_CATEGORIES
+   { "content-policy", NS_DATADOCUMENTCONTENTPOLICY_CONTRACTID, NS_DATADOCUMENTCONTENTPOLICY_CONTRACTID },
+   { "content-policy", NS_NODATAPROTOCOLCONTENTPOLICY_CONTRACTID, NS_NODATAPROTOCOLCONTENTPOLICY_CONTRACTID },
+   { "content-policy", "CSPService", CSPSERVICE_CONTRACTID },
+diff --git a/mobile/android/installer/package-manifest.in b/mobile/android/installer/package-manifest.in
+index a87e52c..8438688 100644
+--- a/mobile/android/installer/package-manifest.in
++++ b/mobile/android/installer/package-manifest.in
+@@ -161,16 +161,17 @@
+ @BINPATH@/components/dom_sidebar.xpt
+ @BINPATH@/components/dom_mobilemessage.xpt
+ @BINPATH@/components/dom_storage.xpt
+ @BINPATH@/components/dom_stylesheets.xpt
+ @BINPATH@/components/dom_system.xpt
+ @BINPATH@/components/dom_threads.xpt
+ @BINPATH@/components/dom_traversal.xpt
+ @BINPATH@/components/dom_tv.xpt
++@BINPATH@/components/dom_inputport.xpt
+ @BINPATH@/components/dom_views.xpt
+ #ifdef MOZ_WEBSPEECH
+ @BINPATH@/components/dom_webspeechrecognition.xpt
+ #endif
+ @BINPATH@/components/dom_xbl.xpt
+ @BINPATH@/components/dom_xpath.xpt
+ @BINPATH@/components/dom_xul.xpt
+ #ifdef MOZ_GAMEPAD
+-- 
+1.9.1
+
