@@ -2,7 +2,7 @@
 # User James Cheng <jacheng@mozilla.com>
 # Date 1425661371 -28800
 #      Sat Mar 07 01:02:51 2015 +0800
-# Node ID ef577d18abe9197e0f1ff6a8ea848b4998e44bd4
+# Node ID 0c995ac43b0f07a6d203662a49601f2d78dc05b5
 # Parent  7d85ac833cffb46f4b59ebf4f5ba88114b2f5fe6
 [PATCH 1/2] Bug 1026350 - Rebase and add checkpermission and only allow certified app to use inputport API.
 
@@ -145,7 +145,8 @@ diff --git a/browser/installer/package-manifest.in b/browser/installer/package-m
 diff --git a/dom/apps/PermissionsTable.jsm b/dom/apps/PermissionsTable.jsm
 --- a/dom/apps/PermissionsTable.jsm
 +++ b/dom/apps/PermissionsTable.jsm
-@@ -532,16 +532,22 @@ this.PermissionsTable =  { geolocation: 
+@@ -531,16 +531,22 @@ this.PermissionsTable =  { geolocation: 
+                              privileged: DENY_ACTION,
                               certified: ALLOW_ACTION
                             },
                             "secureelement-manage": {
@@ -153,13 +154,13 @@ diff --git a/dom/apps/PermissionsTable.jsm b/dom/apps/PermissionsTable.jsm
                               trusted: DENY_ACTION,
                               privileged: DENY_ACTION,
                               certified: ALLOW_ACTION
-                            }
++                           },
 +                           "inputport": {
 +                             app: DENY_ACTION,
 +                             trusted: DENY_ACTION,
-+                             privileged: ALLOW_ACTION,
++                             privileged: DENY_ACTION,
 +                             certified: ALLOW_ACTION
-+                           },
+                            }
                           };
  
  /**
@@ -167,7 +168,6 @@ diff --git a/dom/apps/PermissionsTable.jsm b/dom/apps/PermissionsTable.jsm
   *   e.g. permission name 'contacts' with ['read', 'write'] =
   *   ['contacts-read', contacts-write']
   * @param string aPermName
-  * @param array aAccess
 diff --git a/dom/base/Navigator.cpp b/dom/base/Navigator.cpp
 --- a/dom/base/Navigator.cpp
 +++ b/dom/base/Navigator.cpp
@@ -1480,7 +1480,7 @@ diff --git a/dom/inputport/InputPortServiceCallbacks.cpp b/dom/inputport/InputPo
 new file mode 100644
 --- /dev/null
 +++ b/dom/inputport/InputPortServiceCallbacks.cpp
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,111 @@
 +/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 +/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 +/* This Source Code Form is subject to the terms of the Mozilla Public
@@ -1559,6 +1559,8 @@ new file mode 100644
 +    case InputPortType::Hdmi:
 +      port = HDMIInputPort::Create(mManager->GetParentObject(), portListener,
 +        portData);
++      break;
++    default:
 +      break;
 +    }
 +    NS_ENSURE_TRUE(port, NS_ERROR_DOM_ABORT_ERR);
