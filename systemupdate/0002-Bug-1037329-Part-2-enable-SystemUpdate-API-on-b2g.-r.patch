@@ -1,35 +1,51 @@
-From 92fbcc4758660123fa927c2b50c866098667106c Mon Sep 17 00:00:00 2001
-From: James Cheng <jacheng@mozilla.com>
-Date: Thu, 5 Mar 2015 16:48:01 +0800
-Subject: [PATCH 2/2] Bug 1037329 - Part 2, enable SystemUpdate API on b2g.
- r=fabrice.
+# HG changeset patch
+# User James Cheng <jacheng@mozilla.com>
+
+Bug 1037329 - Part 2, enable SystemUpdate API on b2g. r=fabrice
 
 ---
  b2g/app/b2g.js                        |   6 ++
  b2g/chrome/content/shell.js           |   1 +
  b2g/components/B2GComponents.manifest |   1 +
- b2g/components/UpdatePrompt.js        | 101 +++++++++++++++++++++++++++++++++-
+ b2g/components/UpdatePrompt.js        | 163 +++++++++++++++++++++++++++++++++-
  b2g/installer/package-manifest.in     |   3 +
- 5 files changed, 111 insertions(+), 1 deletion(-)
+ 5 files changed, 170 insertions(+), 4 deletions(-)
 
 diff --git a/b2g/app/b2g.js b/b2g/app/b2g.js
-index 210f7a3..9575407 100644
+index 194578d..ffbd37c 100644
 --- a/b2g/app/b2g.js
 +++ b/b2g/app/b2g.js
-@@ -1084,16 +1084,22 @@ pref("services.mobileid.server.uri", "https://msisdn.services.mozilla.com");
+@@ -595,16 +595,19 @@ pref("app.update.socket.retryTimeout", 30000);
+ // Max of 20 consecutive retries (total 10 minutes) before giving up and marking
+ // the update download as failed.
+ // Note: Offline errors will always retry when the network comes online.
+ pref("app.update.socket.maxErrors", 20);
+ 
+ // Enable update logging for now, to diagnose growing pains in the
+ // field.
+ pref("app.update.log", true);
++
++// SystemUpdate API
++pref("dom.system_update.active", "@mozilla.org/updates/update-prompt;1");
+ #else
+ // Explicitly disable the shutdown watchdog.  It's enabled by default.
+ // When the updater is disabled, we want to know about shutdown hangs.
+ pref("shutdown.watchdog.timeoutSecs", -1);
+ #endif
+ 
+ // Allow webapps update checking
+ pref("webapps.update.enabled", true);
+@@ -1074,16 +1077,19 @@ pref("identity.fxaccounts.enabled", true);
+ // Mobile Identity API.
+ pref("services.mobileid.server.uri", "https://msisdn.services.mozilla.com");
+ 
  // Enable mapped array buffer.
  #ifndef XP_WIN
  pref("dom.mapped_arraybuffer.enabled", true);
  #endif
  
- // BroadcastChannel API
- pref("dom.broadcastChannel.enabled", true);
- 
 +// SystemUpdate API
-+pref("dom.system-update.enabled", true);
-+#ifdef MOZ_UPDATER
-+pref("dom.system-update.active", "@mozilla.org/updates/update-prompt;1");
-+#endif
++pref("dom.system_update.enabled", true);
 +
  // UDPSocket API
  pref("dom.udpsocket.enabled", true);
@@ -40,7 +56,7 @@ index 210f7a3..9575407 100644
  pref("dom.mozSettings.SettingsDB.debug.enabled", true);
  pref("dom.mozSettings.SettingsManager.debug.enabled", true);
 diff --git a/b2g/chrome/content/shell.js b/b2g/chrome/content/shell.js
-index b16d062..8f66116 100644
+index 196f945..2810741 100644
 --- a/b2g/chrome/content/shell.js
 +++ b/b2g/chrome/content/shell.js
 @@ -11,16 +11,17 @@ Cu.import('resource://gre/modules/ActivitiesService.jsm');
@@ -62,7 +78,7 @@ index b16d062..8f66116 100644
  Cu.import('resource://gre/modules/SignInToWebsite.jsm');
  SignInToWebsiteController.init();
 diff --git a/b2g/components/B2GComponents.manifest b/b2g/components/B2GComponents.manifest
-index 18a747d..45935f2 100644
+index 4423cd6..541aa00 100644
 --- a/b2g/components/B2GComponents.manifest
 +++ b/b2g/components/B2GComponents.manifest
 @@ -8,16 +8,17 @@ contract @mozilla.org/system-alerts-service;1 {fe33c107-82a4-41d6-8c64-5353267e0
@@ -84,10 +100,74 @@ index 18a747d..45935f2 100644
  
  # ActivitiesGlue.js
 diff --git a/b2g/components/UpdatePrompt.js b/b2g/components/UpdatePrompt.js
-index fee312f..5c11f67 100644
+index fee312f..6870f45 100644
 --- a/b2g/components/UpdatePrompt.js
 +++ b/b2g/components/UpdatePrompt.js
-@@ -124,23 +124,74 @@ function UpdatePrompt() {
+@@ -79,42 +79,60 @@ UpdateCheckListener.prototype = {
+       // see, even if a newer update is available.
+       this._updatePrompt.setUpdateStatus("active-update");
+       this._updatePrompt.showUpdateAvailable(Services.um.activeUpdate);
+       return;
+     }
+ 
+     if (updateCount == 0) {
+       this._updatePrompt.setUpdateStatus("no-updates");
++
++      if (this._updatePrompt._systemUpdateListener) {
++        this._updatePrompt._systemUpdateListener.onError("no-updates");
++      }
++
+       return;
+     }
+ 
+     let update = Services.aus.selectUpdate(updates, updateCount);
+     if (!update) {
+       this._updatePrompt.setUpdateStatus("already-latest-version");
++
++      if (this._updatePrompt._systemUpdateListener) {
++        this._updatePrompt._systemUpdateListener.onError("already-latest-version");
++      }
++
+       return;
+     }
+ 
+     this._updatePrompt.setUpdateStatus("check-complete");
+     this._updatePrompt.showUpdateAvailable(update);
+   },
+ 
+   onError: function UCL_onError(request, update) {
+     // nsIUpdate uses a signed integer for errorCode while any platform errors
+     // require all 32 bits.
+     let errorCode = update.errorCode >>> 0;
+     let isNSError = (errorCode >>> 31) == 1;
++    let errorMsg = "check-error-";
+ 
+     if (errorCode == NETWORK_ERROR_OFFLINE) {
+-      this._updatePrompt.setUpdateStatus("retry-when-online");
++      errorMsg = "retry-when-online";
++      this._updatePrompt.setUpdateStatus(errorMsg);
+     } else if (isNSError) {
+-      this._updatePrompt.setUpdateStatus("check-error-" + errorCode);
++      errorMsg = "check-error-" + errorCode;
++      this._updatePrompt.setUpdateStatus(errorMsg);
+     } else if (errorCode > HTTP_ERROR_OFFSET) {
+       let httpErrorCode = errorCode - HTTP_ERROR_OFFSET;
+-      this._updatePrompt.setUpdateStatus("check-error-http-" + httpErrorCode);
++      errorMsg = "check-error-http-" + httpErrorCode;
++      this._updatePrompt.setUpdateStatus(errorMsg);
++    }
++
++    if (this._updatePrompt._systemUpdateListener) {
++      this._updatePrompt._systemUpdateListener.onError(errorMsg);
+     }
+ 
+     Services.aus.QueryInterface(Ci.nsIUpdateCheckListener);
+     Services.aus.onError(request, update);
+   }
+ };
+ 
+ function UpdatePrompt() {
+@@ -124,23 +142,103 @@ function UpdatePrompt() {
  }
  
  UpdatePrompt.prototype = {
@@ -105,7 +185,7 @@ index fee312f..5c11f67 100644
    _applyPromptTimer: null,
    _waitingForIdle: false,
    _updateCheckListner: null,
-+  _updateListener: null,
++  _systemUpdateListener: null,
 +  _availableParameters: {
 +    "deviceinfo.last_updated": null,
 +    "gecko.updateStatus": null,
@@ -113,47 +193,76 @@ index fee312f..5c11f67 100644
 +    "app.update.interval": null,
 +    "app.update.url": null,
 +  },
++  _pendingUpdateAvailablePackageInfo: null,
++  _isPendingUpdateReady: false,
 +
 +  // nsISystemUpdateProvider
 +  checkForUpdate: function() {
 +    this.forceUpdateCheck();
 +  },
++
 +  startDownload: function() {
 +    this.downloadUpdate(this._update);
 +  },
++
 +  stopDownload: function() {
 +    this.handleDownloadCancel();
 +  },
++
 +  applyUpdate: function() {
 +    this.handleApplyPromptResult({result: "restart"});
 +  },
-+  setParameter: function(name, value) {
-+    if (!this._availableParameters.hasOwnProperty(name)) {
++
++  setParameter: function(aName, aValue) {
++    if (!this._availableParameters.hasOwnProperty(aName)) {
 +      return false;
 +    }
 +
-+    this._availableParameters[name] = value;
++    this._availableParameters[aName] = aValue;
 +
-+    switch (name) {
++    switch (aName) {
 +      case "app.update.channel":
 +      case "app.update.url":
-+        Services.prefs.setCharPref(name, value);
++        Services.prefs.setCharPref(aName, aValue);
 +        break;
 +      case "app.update.interval":
-+        Services.prefs.setIntPref(name, parseInt(value, 10));
++        Services.prefs.setIntPref(aName, parseInt(aValue, 10));
 +        break;
 +    }
 +
 +    return true;
 +  },
-+  getParameter: function(name) {
-+    return this._availableParameters[name];
++
++  getParameter: function(aName) {
++    if (!this._availableParameters.hasOwnProperty(aName)) {
++      return null;
++    }
++
++    return this._availableParameters[aName];
 +  },
-+  setListener: function(listener) {
-+    this._updateListener = listener;
++
++  setListener: function(aListener) {
++    this._systemUpdateListener = aListener;
++
++    // If an update is available or ready, trigger the event right away at this point.
++    if (this._pendingUpdateAvailablePackageInfo) {
++      this._systemUpdateListener.onUpdateAvailable(this._pendingUpdateAvailablePackageInfo.type,
++                                             this._pendingUpdateAvailablePackageInfo.version,
++                                             this._pendingUpdateAvailablePackageInfo.description,
++                                             this._pendingUpdateAvailablePackageInfo.buildDate,
++                                             this._pendingUpdateAvailablePackageInfo.size);
++      // Set null when the listener is attached.
++      this._pendingUpdateAvailablePackageInfo = null;
++    }
++
++    if (this._isPendingUpdateReady) {
++      this._systemUpdateListener.onUpdateReady();
++      this._isPendingUpdateReady = false;
++    }
 +  },
-+  unsetListener: function(listener) {
-+    this._updateListener = null;
++
++  unsetListener: function(aListener) {
++    this._systemUpdateListener = null;
 +  },
  
    get applyPromptTimeout() {
@@ -163,7 +272,7 @@ index fee312f..5c11f67 100644
    get applyIdleTimeout() {
      return Services.prefs.getIntPref(PREF_APPLY_IDLE_TIMEOUT);
    },
-@@ -152,24 +203,55 @@ UpdatePrompt.prototype = {
+@@ -152,24 +250,61 @@ UpdatePrompt.prototype = {
    // nsIUpdatePrompt
  
    // FIXME/bug 737601: we should have users opt-in to downloading
@@ -172,32 +281,35 @@ index fee312f..5c11f67 100644
    checkForUpdates: function UP_checkForUpdates() { },
  
    showUpdateAvailable: function UP_showUpdateAvailable(aUpdate) {
-+    if (this._updateListener) {
-+      //XXX need the list of required package information with Gaia dev
-+      let packageInfo = {};
-+      packageInfo.version = aUpdate.displayVersion;
-+      packageInfo.description = aUpdate.statusText;
-+      packageInfo.buildDate = aUpdate.buildID;
++    let packageInfo = {};
++    packageInfo.version = aUpdate.displayVersion;
++    packageInfo.description = aUpdate.statusText;
++    packageInfo.buildDate = aUpdate.buildID;
 +
-+      let patch = aUpdate.selectedPatch;
-+      if (!patch && aUpdate.patchCount > 0) {
-+        // For now we just check the first patch to get size information if a
-+        // patch hasn't been selected yet.
-+        patch = aUpdate.getPatchAt(0);
-+      }
++    let patch = aUpdate.selectedPatch;
++    if (!patch && aUpdate.patchCount > 0) {
++      // For now we just check the first patch to get size information if a
++      // patch hasn't been selected yet.
++      patch = aUpdate.getPatchAt(0);
++    }
 +
-+      if (patch) {
-+        packageInfo.size = patch.size;
-+        packageInfo.type = patch.type;
-+      } else {
-+        log("Warning: no patches available in update");
-+      }
++    if (patch) {
++      packageInfo.size = patch.size;
++      packageInfo.type = patch.type;
++    } else {
++      log("Warning: no patches available in update");
++    }
 +
-+      this._updateListener.onUpdateAvailable(packageInfo.type,
++    this._pendingUpdateAvailablePackageInfo = packageInfo;
++
++    if (this._systemUpdateListener) {
++      this._systemUpdateListener.onUpdateAvailable(packageInfo.type,
 +                                             packageInfo.version,
 +                                             packageInfo.description,
 +                                             packageInfo.buildDate,
 +                                             packageInfo.size);
++      // Set null since the event is fired.
++      this._pendingUpdateAvailablePackageInfo = null;
 +    }
 +
      if (!this.sendUpdateEvent("update-available", aUpdate)) {
@@ -208,9 +320,12 @@ index fee312f..5c11f67 100644
    },
  
    showUpdateDownloaded: function UP_showUpdateDownloaded(aUpdate, aBackground) {
-+    if (this._updateListener) {
-+      this._updateListener.onUpdateReady();
++    if (this._systemUpdateListener) {
++      this._systemUpdateListener.onUpdateReady();
++    } else {
++      this._isPendingUpdateReady = true;
 +    }
++
      // The update has been downloaded and staged. We send the update-downloaded
      // event right away. After the user has been idle for a while, we send the
      // update-prompt-restart event, increasing the chances that we can apply the
@@ -219,7 +334,7 @@ index fee312f..5c11f67 100644
  
      if (Services.idle.idleTime >= this.applyIdleTimeout) {
        this.showApplyPrompt(aUpdate);
-@@ -183,22 +265,28 @@ UpdatePrompt.prototype = {
+@@ -183,22 +318,28 @@ UpdatePrompt.prototype = {
  
      this._update = aUpdate;
      this.waitForIdle();
@@ -228,8 +343,8 @@ index fee312f..5c11f67 100644
    showUpdateError: function UP_showUpdateError(aUpdate) {
      log("Update error, state: " + aUpdate.state + ", errorCode: " +
          aUpdate.errorCode);
-+    if (this._updateListener) {
-+      this._updateListener.onError("update-error: " + aUpdate.errorCode + " " + aUpdate.statusText);
++    if (this._systemUpdateListener) {
++      this._systemUpdateListener.onError("update-error: " + aUpdate.errorCode + " " + aUpdate.statusText);
 +    }
 +
      this.sendUpdateEvent("update-error", aUpdate);
@@ -248,7 +363,7 @@ index fee312f..5c11f67 100644
  
    // Custom functions
  
-@@ -208,25 +296,32 @@ UpdatePrompt.prototype = {
+@@ -208,25 +349,35 @@ UpdatePrompt.prototype = {
      }
  
      this._waitingForIdle = true;
@@ -268,9 +383,12 @@ index fee312f..5c11f67 100644
    },
  
    showApplyPrompt: function UP_showApplyPrompt(aUpdate) {
-+    // notify update package is ready to apply
-+    if (this._updateListener) {
-+      this._updateListener.onUpdateReady();
++    // Notify update package is ready to apply
++    if (this._systemUpdateListener) {
++      this._systemUpdateListener.onUpdateReady();
++    } else {
++      // Set the flag to true and fire the onUpdateReady event when the listener is attached.
++      this._isPendingUpdateReady = true;
 +    }
 +
      if (!this.sendUpdateEvent("update-prompt-apply", aUpdate)) {
@@ -281,7 +399,7 @@ index fee312f..5c11f67 100644
  
  #ifdef MOZ_B2G_RIL
      let window = Services.wm.getMostRecentWindow("navigator:browser");
-@@ -576,16 +671,20 @@ UpdatePrompt.prototype = {
+@@ -576,16 +727,20 @@ UpdatePrompt.prototype = {
        paused: paused
      });
    },
@@ -290,8 +408,8 @@ index fee312f..5c11f67 100644
  
    onProgress: function UP_onProgress(aRequest, aContext, aProgress,
                                       aProgressMax) {
-+    if (this._updateListener) {
-+      this._updateListener.onProgress(aProgress, aProgressMax);
++    if (this._systemUpdateListener) {
++      this._systemUpdateListener.onProgress(aProgress, aProgressMax);
 +    }
 +
      if (aProgress == aProgressMax) {
@@ -303,10 +421,10 @@ index fee312f..5c11f67 100644
        this.touchWatchdogTimer();
      }
 diff --git a/b2g/installer/package-manifest.in b/b2g/installer/package-manifest.in
-index 89a56ba..13ed10c 100644
+index cb94a01..f6a028b 100644
 --- a/b2g/installer/package-manifest.in
 +++ b/b2g/installer/package-manifest.in
-@@ -640,16 +640,19 @@
+@@ -632,16 +632,19 @@
  ; InputMethod API
  @BINPATH@/components/MozKeyboard.js
  @BINPATH@/components/InputMethod.manifest
@@ -326,6 +444,4 @@ index 89a56ba..13ed10c 100644
  ; Modules
  @BINPATH@/modules/*
  
--- 
-1.9.1
 

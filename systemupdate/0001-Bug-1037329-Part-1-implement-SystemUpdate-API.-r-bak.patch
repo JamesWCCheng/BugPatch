@@ -1,23 +1,22 @@
-From ac08bffd82aab66b76dcd01fa87ea7307434348f Mon Sep 17 00:00:00 2001
-From: James Cheng <jacheng@mozilla.com>
-Date: Thu, 5 Mar 2015 16:42:33 +0800
-Subject: [PATCH 1/2] Bug 1037329 - Part 1, implement SystemUpdate API.
- r=fabrice. sr=sicking.
+# HG changeset patch
+# User James Cheng <jacheng@mozilla.com>
+
+Bug 1037329 - Part 1, implement SystemUpdate API. r=baku
 
 ---
- dom/apps/PermissionsTable.jsm                      |   8 +-
+ dom/apps/PermissionsTable.jsm                      |   6 +
  dom/system/SystemUpdate.manifest                   |   2 +
- dom/system/SystemUpdateManager.js                  | 255 +++++++++++++++
- dom/system/SystemUpdateService.jsm                 | 364 +++++++++++++++++++++
+ dom/system/SystemUpdateManager.js                  | 262 ++++++++++++++
+ dom/system/SystemUpdateService.jsm                 | 382 +++++++++++++++++++++
  dom/system/moz.build                               |   8 +
- dom/system/nsISystemUpdateProvider.idl             |  39 +++
- dom/system/tests/mochitest.ini                     |   5 +
- .../tests/preload-SystemUpdateManager-jsm.js       |  74 +++++
- dom/system/tests/test_system_update_enabled.html   | 164 ++++++++++
+ dom/system/nsISystemUpdateProvider.idl             |  73 ++++
+ dom/system/tests/mochitest.ini                     |   6 +
+ .../tests/preload-SystemUpdateManager-jsm.js       |  80 +++++
+ dom/system/tests/test_system_update_enabled.html   | 175 ++++++++++
  dom/webidl/SystemUpdate.webidl                     |  48 +++
  dom/webidl/moz.build                               |   1 +
  modules/libpref/init/all.js                        |   4 +
- 12 files changed, 971 insertions(+), 1 deletion(-)
+ 12 files changed, 1047 insertions(+)
  create mode 100644 dom/system/SystemUpdate.manifest
  create mode 100644 dom/system/SystemUpdateManager.js
  create mode 100644 dom/system/SystemUpdateService.jsm
@@ -28,26 +27,25 @@ Subject: [PATCH 1/2] Bug 1037329 - Part 1, implement SystemUpdate API.
  create mode 100644 dom/webidl/SystemUpdate.webidl
 
 diff --git a/dom/apps/PermissionsTable.jsm b/dom/apps/PermissionsTable.jsm
-index 4d0e58f..c586892 100644
+index e964c0c..4464066 100644
 --- a/dom/apps/PermissionsTable.jsm
 +++ b/dom/apps/PermissionsTable.jsm
-@@ -531,17 +531,23 @@ this.PermissionsTable =  { geolocation: {
+@@ -533,16 +533,22 @@ this.PermissionsTable =  { geolocation: {
                               privileged: DENY_ACTION,
                               certified: ALLOW_ACTION
                             },
-                            "secureelement-manage": {
+                            "external-app": {
                               app: DENY_ACTION,
                               trusted: DENY_ACTION,
-                              privileged: DENY_ACTION,
+                              privileged: ALLOW_ACTION,
                               certified: ALLOW_ACTION
--                           }
 +                           },
-+                            "system-update": {
++                           "system-update": {
 +                             app: DENY_ACTION,
 +                             trusted: DENY_ACTION,
 +                             privileged: DENY_ACTION,
 +                             certified: ALLOW_ACTION
-+                           },
+                            }
                           };
  
  /**
@@ -55,7 +53,6 @@ index 4d0e58f..c586892 100644
   *   e.g. permission name 'contacts' with ['read', 'write'] =
   *   ['contacts-read', contacts-write']
   * @param string aPermName
-  * @param array aAccess
 diff --git a/dom/system/SystemUpdate.manifest b/dom/system/SystemUpdate.manifest
 new file mode 100644
 index 0000000..cd72a86
@@ -66,10 +63,10 @@ index 0000000..cd72a86
 +contract @mozilla.org/system-update-manager;1 {e8530001-ba5b-46ab-a306-7fbeb692d0fe}
 diff --git a/dom/system/SystemUpdateManager.js b/dom/system/SystemUpdateManager.js
 new file mode 100644
-index 0000000..36865af
+index 0000000..83f642c
 --- /dev/null
 +++ b/dom/system/SystemUpdateManager.js
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,262 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this file,
 + * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -82,7 +79,7 @@ index 0000000..36865af
 +Cu.import("resource://gre/modules/Services.jsm");
 +Cu.import("resource://gre/modules/DOMRequestHelper.jsm");
 +
-+let debug = Services.prefs.getBoolPref("dom.system-update.debug")
++let debug = Services.prefs.getBoolPref("dom.system_update.debug")
 +              ? (aMsg) => dump("-*- SystemUpdateManager.js : " + aMsg + "\n")
 +              : (aMsg) => {};
 +
@@ -130,7 +127,8 @@ index 0000000..36865af
 +            packageInfo: json.packageInfo
 +          }
 +        };
-+        let event = new this._window.CustomEvent("updateavailable", Cu.cloneInto(detail, this._window));
++        let event = new this._window.CustomEvent("updateavailable",
++                                                  Cu.cloneInto(detail, this._window));
 +        this.__DOM_IMPL__.dispatchEvent(event);
 +        break;
 +      }
@@ -158,8 +156,12 @@ index 0000000..36865af
 +    this.destroyDOMRequestHelper();
 +  },
 +
-+  get info() {
-+    return this._provider;
++  get name() {
++    return this._provider.name;
++  },
++
++  get uuid() {
++    return this._provider.uuid;
 +  },
 +
 +  get onupdateavailable() {
@@ -259,7 +261,8 @@ index 0000000..36865af
 +      case "SystemUpdate:SetActiveProvider:Result:OK":
 +      case "SystemUpdate:GetActiveProvider:Result:OK": {
 +        let updateProvider = new SystemUpdateProvider(this._window, json.provider);
-+        resolver.resolve(this._window.SystemUpdateProvider._create(this._window, updateProvider));
++        resolver.resolve(this._window.SystemUpdateProvider._create(this._window,
++                                                                   updateProvider));
 +        break;
 +      }
 +      case "SystemUpdate:GetProviders:Result:Error":
@@ -318,7 +321,8 @@ index 0000000..36865af
 +  _sendPromise: function(aCallback) {
 +    let self = this;
 +    return this.createPromise(function(aResolve, aReject) {
-+      let resolverId = self.getPromiseResolverId({ resolve: aResolve, reject: aReject });
++      let resolverId = self.getPromiseResolverId({resolve: aResolve,
++                                                  reject: aReject});
 +      aCallback(resolverId);
 +    });
 +  }
@@ -327,10 +331,10 @@ index 0000000..36865af
 +this.NSGetFactory = XPCOMUtils.generateNSGetFactory([SystemUpdateManager]);
 diff --git a/dom/system/SystemUpdateService.jsm b/dom/system/SystemUpdateService.jsm
 new file mode 100644
-index 0000000..387c32e
+index 0000000..13b2ff1
 --- /dev/null
 +++ b/dom/system/SystemUpdateService.jsm
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,382 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this file,
 + * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -350,7 +354,7 @@ index 0000000..387c32e
 +const PROVIDER_ACTIVITY_DOWNLOADING = 1 << 1;
 +const PROVIDER_ACTIVITY_APPLYING = 1 << 2;
 +
-+let debug = Services.prefs.getBoolPref("dom.system-update.debug")
++let debug = Services.prefs.getBoolPref("dom.system_update.debug")
 +              ? (aMsg) => dump("-*- SystemUpdateService.jsm : " + aMsg + "\n")
 +              : (aMsg) => {};
 +
@@ -372,50 +376,30 @@ index 0000000..387c32e
 +  destroy: function() {
 +    if (this._instance) {
 +      this._instance.unsetListener();
++      this._instance = null;
 +    }
 +
-+    this._instance = null;
 +    this.id = null;
 +  },
 +
 +  checkForUpdate: function() {
-+    // do nothing if already checking for update
-+    if (this._isInActivity(PROVIDER_ACTIVITY_CHECKING)) {
-+      return;
-+    }
-+
-+    this._setActivity(PROVIDER_ACTIVITY_CHECKING);
-+    this._instance.checkForUpdate();
++    this._execFuncIfNotInActivity(PROVIDER_ACTIVITY_CHECKING,
++                                  this._instance.checkForUpdate);
 +  },
 +
 +  startDownload: function() {
-+    // do nothing if already downloading update package
-+    if (this._isInActivity(PROVIDER_ACTIVITY_DOWNLOADING)) {
-+      return;
-+    }
-+
-+    this._setActivity(PROVIDER_ACTIVITY_DOWNLOADING);
-+    this._instance.startDownload();
++    this._execFuncIfNotInActivity(PROVIDER_ACTIVITY_DOWNLOADING,
++                                  this._instance.startDownload);
 +  },
 +
 +  stopDownload: function() {
-+    // do nothing if not downloading update package
-+    if (!this._isInActivity(PROVIDER_ACTIVITY_DOWNLOADING)) {
-+      return;
-+    }
-+
-+    this._unsetActivity(PROVIDER_ACTIVITY_DOWNLOADING);
-+    this._instance.stopDownload();
++    this._execFuncIfNotInActivity(PROVIDER_ACTIVITY_DOWNLOADING,
++                                  this._instance.stopDownload);
 +  },
 +
 +  applyUpdate: function() {
-+    // do nothing if already applying update
-+    if (this._isInActivity(PROVIDER_ACTIVITY_APPLYING)) {
-+      return;
-+    }
-+
-+    this._setActivity(PROVIDER_ACTIVITY_APPLYING);
-+    this._instance.applyUpdate();
++    this._execFuncIfNotInActivity(PROVIDER_ACTIVITY_APPLYING,
++                                  this._instance.applyUpdate);
 +  },
 +
 +  setParameter: function(aName, aValue) {
@@ -428,46 +412,40 @@ index 0000000..387c32e
 +
 +  // nsISystemUpdateListener
 +  onUpdateAvailable: function(aType, aVersion, aDescription, aBuildDate, aSize) {
-+    if (!SystemUpdateService._isActiveProviderId(this.id)) {
-+      return;
-+    }
++    this._execFuncIfActiveAndInAction(PROVIDER_ACTIVITY_CHECKING, function() {
++      ppmm.broadcastAsyncMessage("SystemUpdate:OnUpdateAvailable", {
++        uuid: this.id,
++        packageInfo: {
++          type: aType,
++          version: aVersion,
++          description: aDescription,
++          buildDate: aBuildDate,
++          size: aSize,
++        }
++      });
 +
-+    ppmm.broadcastAsyncMessage("SystemUpdate:OnUpdateAvailable", {
-+      uuid: this.id,
-+      packageInfo: {
-+        type: aType,
-+        version: aVersion,
-+        description: aDescription,
-+        buildDate: new Date(aBuildDate),
-+        size: aSize,
-+      }
-+    });
-+
-+    this._unsetActivity(PROVIDER_ACTIVITY_CHECKING);
++      this._unsetActivity(PROVIDER_ACTIVITY_CHECKING);
++    }.bind(this));
 +  },
 +
 +  onProgress: function(aLoaded, aTotal) {
-+    if (!SystemUpdateService._isActiveProviderId(this.id)) {
-+      return;
-+    }
-+
-+    ppmm.broadcastAsyncMessage("SystemUpdate:OnProgress", {
-+      uuid: this.id,
-+      loaded: aLoaded,
-+      total: aTotal,
-+    });
++    this._execFuncIfActiveAndInAction(PROVIDER_ACTIVITY_DOWNLOADING, function() {
++      ppmm.broadcastAsyncMessage("SystemUpdate:OnProgress", {
++        uuid: this.id,
++        loaded: aLoaded,
++        total: aTotal,
++      });
++    }.bind(this));
 +  },
 +
 +  onUpdateReady: function() {
-+    if (!SystemUpdateService._isActiveProviderId(this.id)) {
-+      return;
-+    }
++    this._execFuncIfActiveAndInAction(PROVIDER_ACTIVITY_DOWNLOADING, function() {
++      ppmm.broadcastAsyncMessage("SystemUpdate:OnUpdateReady", {
++        uuid: this.id,
++      });
 +
-+    ppmm.broadcastAsyncMessage("SystemUpdate:OnUpdateReady", {
-+      uuid: this.id,
-+    });
-+
-+    this._unsetActivity(PROVIDER_ACTIVITY_DOWNLOADING);
++      this._unsetActivity(PROVIDER_ACTIVITY_DOWNLOADING);
++    }.bind(this));
 +  },
 +
 +  onError: function(aErrMsg) {
@@ -498,6 +476,23 @@ index 0000000..387c32e
 +  _unsetActivity: function(aActivity) {
 +    this._activity &= ~aActivity;
 +  },
++
++  _execFuncIfNotInActivity: function(aActivity, aFunc) {
++    if (!this._isInActivity(aActivity)) {
++      this._setActivity(aActivity);
++      aFunc();
++    }
++  },
++
++  _execFuncIfActiveAndInAction: function(aActivity, aFunc) {
++    if (!SystemUpdateService._isActiveProviderId(this.id)) {
++      return;
++    }
++    if (this._isInActivity(aActivity)) {
++      aFunc();
++    }
++  },
++
 +};
 +
 +this.SystemUpdateService = {
@@ -519,16 +514,16 @@ index 0000000..387c32e
 +  init: function() {
 +    debug("init");
 +
-+    this.messages = ["SystemUpdate:GetProviders",
-+                     "SystemUpdate:GetActiveProvider",
-+                     "SystemUpdate:SetActiveProvider",
-+                     "SystemUpdate:CheckForUpdate",
-+                     "SystemUpdate:StartDownload",
-+                     "SystemUpdate:StopDownload",
-+                     "SystemUpdate:ApplyUpdate",
-+                     "SystemUpdate:SetParameter",
-+                     "SystemUpdate:GetParameter"];
-+    this.messages.forEach((function(aMsgName) {
++    let messages = ["SystemUpdate:GetProviders",
++                    "SystemUpdate:GetActiveProvider",
++                    "SystemUpdate:SetActiveProvider",
++                    "SystemUpdate:CheckForUpdate",
++                    "SystemUpdate:StartDownload",
++                    "SystemUpdate:StopDownload",
++                    "SystemUpdate:ApplyUpdate",
++                    "SystemUpdate:SetParameter",
++                    "SystemUpdate:GetParameter"];
++    messages.forEach((function(aMsgName) {
 +      ppmm.addMessageListener(aMsgName, this);
 +    }).bind(this));
 +
@@ -549,7 +544,7 @@ index 0000000..387c32e
 +    // setup default active provider
 +    let defaultActive;
 +    try {
-+      defaultActive = Services.prefs.getCharPref("dom.system-update.active");
++      defaultActive = Services.prefs.getCharPref("dom.system_update.active");
 +    } catch (e) {}
 +
 +    if (defaultActive) {
@@ -561,6 +556,33 @@ index 0000000..387c32e
 +        this._updateActiveProvider(defaultProvider);
 +      }
 +    }
++  },
++
++  addProvider: function(aClassId, aContractId, aName) {
++    debug("addProvider");
++
++    //did not allow null or empty string to add.
++    if(!aClassId || !aContractId || !aName) {
++      return;
++    }
++
++    let existedProvider = this._providers.find(function(provider) {
++      return provider.id === aClassId;
++    });
++
++    //skip if adding the existed provider.
++    if (existedProvider) {
++      debug("existing providers: " + JSON.stringify(existedProvider));
++      return;
++    }
++
++    //dynamically add the provider info to list.
++    this._providers.push({
++        id: aClassId,
++        name: aName,
++        contractId: aContractId
++    });
++    debug("available providers: " + JSON.stringify(this._providers));
 +  },
 +
 +  getProviders: function(aData, aMm) {
@@ -620,7 +642,7 @@ index 0000000..387c32e
 +      }
 +
 +      this._updateActiveProvider(selectedProvider);
-+      Services.prefs.setCharPref("dom.system-update.active", selectedProvider.contractId);
++      Services.prefs.setCharPref("dom.system_update.active", selectedProvider.contractId);
 +    }
 +
 +    aData.provider = {
@@ -752,10 +774,10 @@ index bb91764..17effdc 100644
 +MOCHITEST_MANIFESTS += ['tests/mochitest.ini']
 diff --git a/dom/system/nsISystemUpdateProvider.idl b/dom/system/nsISystemUpdateProvider.idl
 new file mode 100644
-index 0000000..3402d8d
+index 0000000..38e61eb
 --- /dev/null
 +++ b/dom/system/nsISystemUpdateProvider.idl
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,73 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this file,
 + * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -765,20 +787,29 @@ index 0000000..3402d8d
 +[scriptable, uuid(775edbf5-b4a9-400c-b0ad-ea3c3a027097)]
 +interface nsISystemUpdateListener : nsISupports
 +{
-+  // callback for notifying an update package is available for download
++  /**
++   * callback for notifying an update package is available for download.
++   */
 +  void onUpdateAvailable(in DOMString type,
 +                         in DOMString version,
 +                         in DOMString description,
 +                         in unsigned long long buildDate,
 +                         in unsigned long long size);
 +
-+  // callback for notifying the download progress
++  /**
++   * callback for notifying the download progress.
++   */
 +  void onProgress(in unsigned long long loaded, in unsigned long long total);
 +
-+  // callback for notifying an update package is ready to apply
++  /**
++   * callback for notifying an update package is ready to apply.
++   */
 +  void onUpdateReady();
 +
-+  // callback for notifying any error while checking/downloading/applying an update package.
++  /**
++   * callback for notifying any error while
++   * checking/downloading/applying an update package.
++   */
 +  void onError(in DOMString errMsg);
 +};
 +
@@ -789,39 +820,62 @@ index 0000000..3402d8d
 +  void startDownload();
 +  void stopDownload();
 +  void applyUpdate();
++
++  /**
++   * Set the available parameter to the update provider.
++   * The available parameter is implementation-dependent.
++   * e.g. "update-url", "last-update-date", "update-status", "update-interval"
++   *
++   * @param  name      The number of languages.
++   * @param  languages An array of languages.
++   * @return true when setting an available parameter,
++   *         false when setting an unavailable parameter.
++   */
 +  bool setParameter(in DOMString name, in DOMString value);
++  /**
++   * Get the available parameter from the update provider.
++   * The available parameter is implementation-dependent.
++   *
++   * @param  name The available parameter.
++   * @return The corresponding value to the name.
++   *         Return null if try to get unavailable parameter.
++   */
 +  DOMString getParameter(in DOMString name);
 +
++  /**
++   * NOTE TO IMPLEMENTORS:
++   *   Need to consider if it is necessary to fire the pending event when 
++   *   registering the listener.
++   *   (E.g. UpdateAvailable or UpdateReady event.)
++   */
 +  void setListener(in nsISystemUpdateListener listener);
 +  void unsetListener();
 +};
 diff --git a/dom/system/tests/mochitest.ini b/dom/system/tests/mochitest.ini
 new file mode 100644
-index 0000000..bbe8691
+index 0000000..1d7d2df
 --- /dev/null
 +++ b/dom/system/tests/mochitest.ini
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,6 @@
 +[DEFAULT]
++skip-if = buildapp != 'b2g'
 +support-files =
 +  preload-SystemUpdateManager-jsm.js
 +
 +[test_system_update_enabled.html]
 diff --git a/dom/system/tests/preload-SystemUpdateManager-jsm.js b/dom/system/tests/preload-SystemUpdateManager-jsm.js
 new file mode 100644
-index 0000000..3df9943
+index 0000000..667bef1
 --- /dev/null
 +++ b/dom/system/tests/preload-SystemUpdateManager-jsm.js
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,80 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this file,
 + * You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +'use strict';
 +
-+const Cc = Components.classes;
-+const Ci = Components.interfaces;
-+const Cm = Components.manager;
-+const Cu = Components.utils;
++const {classes: Cc, interfaces: Ci, utils: Cu, manager: Cm} = Components;
 +
 +Cu.import('resource://gre/modules/XPCOMUtils.jsm');
 +
@@ -836,20 +890,25 @@ index 0000000..3df9943
 +    dump('check for update');
 +    this._listener.onUpdateAvailable('test-type', 'test-version', 'test-description', Date.now().valueOf(), 5566);
 +  },
++
 +  startDownload: function() {
 +    dump('test start download');
 +    this._listener.onProgress(10, 100);
 +  },
++
 +  stopDownload: function() {
 +    dump('test stop download');
 +  },
++
 +  applyUpdate: function() {
 +    dump('apply update');
 +  },
++
 +  setParameter: function(name, value) {
 +    dump('set parameter');
 +    return (name === 'dummy' && value === 'dummy-value');
 +  },
++
 +  getParameter: function(name) {
 +    dump('get parameter');
 +    if (name === 'dummy') {
@@ -860,6 +919,7 @@ index 0000000..3df9943
 +  setListener: function(listener) {
 +    this._listener = listener;
 +  },
++
 +  unsetListener: function() {
 +    this._listener = null;
 +  },
@@ -886,12 +946,16 @@ index 0000000..3df9943
 +                    contractId + ',' + cid, false, true);
 +
 +Cu.import('resource://gre/modules/SystemUpdateService.jsm');
++this.SystemUpdateService.addProvider('{17a84227-28f4-453d-9b80-9ae75a5682e0}',
++                                     '@mozilla.org/test-update-provider;1',
++                                     'DummyProvider');
+\ No newline at end of file
 diff --git a/dom/system/tests/test_system_update_enabled.html b/dom/system/tests/test_system_update_enabled.html
 new file mode 100644
-index 0000000..f2a21d1
+index 0000000..1d820d3
 --- /dev/null
 +++ b/dom/system/tests/test_system_update_enabled.html
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,175 @@
 +<!DOCTYPE HTML>
 +<html>
 +<!--
@@ -931,11 +995,22 @@ index 0000000..f2a21d1
 +
 +function testSetActiveProvider(providerInfos) {
 +  return new Promise(function(resolve, reject) {
-+    navigator.updateManager.setActiveProvider(providerInfos[0].uuid).then(function(activeProvider) {
++    //Find the mock provider for our testing provider instead.
++    //Set the mock provider as active provider.
++    let targetProvider = providerInfos[0];
++    for(let provider of providerInfos) {
++      if(provider.uuid == "{17a84227-28f4-453d-9b80-9ae75a5682e0}") {
++        info('target provider uuid: ' + provider.uuid);
++        targetProvider = provider;
++        break;
++      }
++    }
++    is("{17a84227-28f4-453d-9b80-9ae75a5682e0}", targetProvider.uuid, 'get the dynamically added provider');
++    navigator.updateManager.setActiveProvider(targetProvider.uuid).then(function(activeProvider) {
 +      info('active provider info: ' + JSON.stringify(activeProvider.info));
-+      is(activeProvider.info.name, providerInfos[0].name, 'expected name of active provider');
-+      is(activeProvider.info.uuid, providerInfos[0].uuid, 'expected uuid of active provider');
-+      resolve(activeProvider.info);
++      is(activeProvider.name, targetProvider.name, 'expected name of active provider');
++      is(activeProvider.uuid, targetProvider.uuid, 'expected uuid of active provider');
++      resolve({name : activeProvider.name, uuid : activeProvider.uuid});
 +    });
 +  });
 +}
@@ -944,8 +1019,8 @@ index 0000000..f2a21d1
 +  info('test GetActiveProvider');
 +  return new Promise(function(resolve, reject) {
 +    navigator.updateManager.getActiveProvider().then(function(activeProvider) {
-+      is(activeProvider.info.name, providerInfo.name, 'expected name of active provider');
-+      is(activeProvider.info.uuid, providerInfo.uuid, 'expected uuid of active provider');
++      is(activeProvider.name, providerInfo.name, 'expected name of active provider');
++      is(activeProvider.uuid, providerInfo.uuid, 'expected uuid of active provider');
 +      resolve(activeProvider);
 +    });
 +  });
@@ -1045,9 +1120,9 @@ index 0000000..f2a21d1
 +  ], function() {
 +    SpecialPowers.pushPrefEnv({
 +        'set': [
-+          ['dom.system-update.enabled', true],
-+          ['dom.system-update.debug', true],
-+          ['dom.system-update.active', '@mozilla.org/test-update-provider;1'],
++          ['dom.system_update.enabled', true],
++          ['dom.system_update.debug', true],
++          ['dom.system_update.active', '@mozilla.org/test-update-provider;1'],
 +        ]
 +      }, runTest);
 +  }
@@ -1058,7 +1133,7 @@ index 0000000..f2a21d1
 +</html>
 diff --git a/dom/webidl/SystemUpdate.webidl b/dom/webidl/SystemUpdate.webidl
 new file mode 100644
-index 0000000..3bd6dda
+index 0000000..2db5c47
 --- /dev/null
 +++ b/dom/webidl/SystemUpdate.webidl
 @@ -0,0 +1,48 @@
@@ -1067,24 +1142,24 @@ index 0000000..3bd6dda
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +dictionary SystemUpdateProviderInfo {
-+  DOMString name;
-+  DOMString uuid;
++  DOMString name = "";
++  DOMString uuid = "";
 +};
 +
 +dictionary SystemUpdatePackageInfo {
-+  DOMString type;
-+  DOMString version;
-+  DOMString description;
-+  Date buildDate;
-+  unsigned long long size;
++  DOMString type = "";
++  DOMString version = "";
++  DOMString description = "";
++  DOMTimeStamp buildDate = 0;
++  unsigned long long size = 0;
 +};
 +
 +[JSImplementation="@mozilla.org/system-update-provider;1",
 + CheckPermissions="system-update",
-+ Pref="dom.system-update.enabled"]
++ Pref="dom.system_update.enabled"]
 +interface SystemUpdateProvider : EventTarget {
-+  //SystemUpdateProviderInfo
-+  readonly attribute any info;
++  readonly attribute DOMString name;
++  readonly attribute DOMString uuid;
 +
 +  attribute EventHandler onupdateavailable;
 +  attribute EventHandler onprogress;
@@ -1102,7 +1177,7 @@ index 0000000..3bd6dda
 +[NavigatorProperty="updateManager",
 + JSImplementation="@mozilla.org/system-update-manager;1",
 + CheckPermissions="system-update",
-+ Pref="dom.system-update.enabled"]
++ Pref="dom.system_update.enabled"]
 +interface SystemUpdateManager {
 +  Promise<sequence<SystemUpdateProviderInfo>> getProviders();
 +
@@ -1111,10 +1186,10 @@ index 0000000..3bd6dda
 +  Promise<SystemUpdateProvider> getActiveProvider();
 +};
 diff --git a/dom/webidl/moz.build b/dom/webidl/moz.build
-index 265e00b..682a40e 100644
+index cfc3d92..91228c9 100644
 --- a/dom/webidl/moz.build
 +++ b/dom/webidl/moz.build
-@@ -493,16 +493,17 @@ WEBIDL_FILES = [
+@@ -489,16 +489,17 @@ WEBIDL_FILES = [
      'SVGTransformList.webidl',
      'SVGTSpanElement.webidl',
      'SVGUnitTypes.webidl',
@@ -1133,10 +1208,10 @@ index 265e00b..682a40e 100644
      'TextEncoder.webidl',
      'TextTrack.webidl',
 diff --git a/modules/libpref/init/all.js b/modules/libpref/init/all.js
-index 51bb559..8e84283 100644
+index 0510082..f7f9b1f 100644
 --- a/modules/libpref/init/all.js
 +++ b/modules/libpref/init/all.js
-@@ -4441,16 +4441,20 @@ pref("dom.caches.enabled", false);
+@@ -4423,16 +4423,20 @@ pref("dom.fetch.enabled", false);
  // Empirically, this is the value returned by hal::GetTotalSystemMemory()
  // when Flame's memory is limited to 512MiB. If the camera stack determines
  // it is running on a low memory platform, features that can be reliably
@@ -1145,9 +1220,9 @@ index 51bb559..8e84283 100644
  pref("camera.control.low_memory_thresholdMB", 404);
  #endif
  
-+// SysteUpdate API
-+pref("dom.system-update.enabled", false);
-+pref("dom.system-update.debug", false);
++// SystemUpdate API
++pref("dom.system_update.enabled", false);
++pref("dom.system_update.debug", false);
 +
  // UDPSocket API
  pref("dom.udpsocket.enabled", false);
@@ -1155,8 +1230,6 @@ index 51bb559..8e84283 100644
  // Disable before keyboard events and after keyboard events by default.
  pref("dom.beforeAfterKeyboardEvent.enabled", false);
  
- // Presentation API
- pref("dom.presentation.enabled", false);
--- 
-1.9.1
+ // Use raw ICU instead of CoreServices API in Unicode collation
+ #ifdef XP_MACOSX
 
